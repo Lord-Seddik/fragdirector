@@ -1,0 +1,73 @@
+# Default scoring weights for fragdirector.
+#
+# score = kind weight + tag weights + per-kill bonuses (style flags and weapon).
+# To tune, copy this file, keep only the lines you want to change, and pass it
+# with:  fragdirector analyze demo.dem --weights my_weights.toml
+# Anything not listed in your file keeps the value from this file. A name that
+# is not listed anywhere (a new kind, tag or weapon) is worth 0.
+
+# Base value of each kind of moment.
+[kind]
+multikill = 10
+clutch = 10
+flick = 30
+quick_kills = 15
+opening_kill = 8
+trade_kill = 6
+late_kill = 12
+late_defuse = 25
+weapon_kill = 5
+style_kill = 5
+death = 1
+
+# Bonus for each tag a moment carries. The style-flag tags (noscope ...
+# headshot) are listed at 0 on purpose: they are paid per kill in [style].
+# "weapon" is the same: the weapon itself is paid in [weapon].
+[tag]
+2k = 10
+3k = 30
+4k = 60
+5k = 100
+ace = 50
+clutch = 10
+1v1 = 5
+1v2 = 20
+1v3 = 40
+1v4 = 70
+1v5 = 100
+flick = 0
+quick_kills = 0
+opening = 5
+trade = 3
+late_round = 5
+defuse = 5
+last_second = 15
+death = 0
+no_attacker = 0
+team_kill = 0
+weapon = 0
+noscope = 0
+wallbang = 0
+smoke = 0
+blind = 0
+air = 0
+headshot = 0
+
+# Bonus for every kill in the moment that has this style.
+[style]
+noscope = 15
+wallbang = 10
+smoke = 10
+blind = 15
+air = 10
+headshot = 2
+flash_assist = 2
+
+# Bonus for every kill in the moment made with this weapon.
+# Knives (knife, knife_t, bayonet, karambit ...) count as "knife"; zeus as "taser".
+[weapon]
+awp = 3
+ssg08 = 5
+deagle = 5
+knife = 20
+taser = 30

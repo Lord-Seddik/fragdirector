@@ -1,0 +1,217 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #1c1f24;
+  --muted: #667085;
+  --line: #d8dce3;
+  --accent: #2457d6;
+  --ok: #0a6b3d;
+  --err: #b00020;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+h1 { font-size: 1.3rem; margin: 0; }
+h2 { font-size: 1.1rem; margin: 0 0 0.75rem; }
+h3 { font-size: 1rem; margin: 0 0 0.5rem; }
+
+.topbar {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.topbar p { margin: 0; }
+
+.muted { color: var(--muted); }
+.small { font-size: 0.85rem; }
+
+.message {
+  margin: 0.75rem 1.25rem 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.message.error { color: var(--err); border-color: var(--err); }
+.message.ok { color: var(--ok); border-color: var(--ok); }
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(20rem, 26rem) 1fr;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  align-items: start;
+}
+@media (max-width: 800px) {
+  .layout { grid-template-columns: 1fr; }
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1rem;
+}
+
+label { display: block; font-size: 0.9rem; }
+select, input[type="number"] {
+  font: inherit;
+  max-width: 100%;
+}
+
+button {
+  font: inherit;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.link { border: 0; background: none; color: var(--accent); padding: 0; text-decoration: underline; }
+
+.filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.filters label select { display: block; width: 100%; }
+
+.ticks { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
+
+.moments, .timeline, .shot-kills, .notes, .problems {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.moments { max-height: 24rem; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; }
+.moment { border-bottom: 1px solid var(--line); }
+.moment:last-child { border-bottom: 0; }
+.moment.ticked { background: #eaf0ff; }
+.moment-label { display: flex; gap: 0.5rem; align-items: flex-start; padding: 0.4rem 0.5rem; cursor: pointer; }
+.moment-body { flex: 1; display: flex; flex-direction: column; }
+.moment-title { font-weight: 600; }
+.score { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
+.tags { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.15rem; }
+.tag { font-size: 0.75rem; padding: 0 0.4rem; border-radius: 999px; background: #eceef3; color: var(--muted); }
+.empty { padding: 0.75rem; }
+
+.draft { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--line); display: grid; gap: 0.5rem; }
+.draft p { margin: 0; }
+
+.actions { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; }
+
+.notes, .problems { margin-bottom: 0.5rem; font-size: 0.9rem; }
+.notes li { color: var(--muted); }
+.problems li { color: var(--err); }
+
+.timeline { display: grid; gap: 0.5rem; }
+.shot { border: 1px solid var(--line); border-radius: 4px; padding: 0.5rem 0.75rem; }
+.shot-head { display: flex; gap: 0.75rem; align-items: baseline; }
+.shot-index { font-variant-numeric: tabular-nums; color: var(--muted); }
+.shot-length { margin-left: auto; font-variant-numeric: tabular-nums; }
+.shot-label { font-style: italic; }
+.shot-kills { margin-top: 0.25rem; font-size: 0.85rem; color: var(--muted); }
+
+/* ---- timeline editing (T11) ---- */
+
+.dirty { color: var(--err); font-size: 0.85rem; font-weight: 600; }
+
+.shot { position: relative; display: grid; gap: 0.4rem; }
+.shot.dragging { opacity: 0.5; }
+.shot.drop-before { box-shadow: 0 -3px 0 0 var(--accent); }
+.shot.drop-after { box-shadow: 0 3px 0 0 var(--accent); }
+.shot-head { align-items: center; }
+.grip { cursor: grab; color: var(--muted); letter-spacing: -0.1em; user-select: none; padding: 0 0.2rem; }
+
+.span-bar { display: grid; gap: 0.1rem; }
+.span-track {
+  position: relative;
+  height: 1.75rem;
+  background: #e4e6ec;
+  border-radius: 4px;
+  touch-action: none;
+}
+.span-alive { position: absolute; top: 0; bottom: 0; background: #d3ecdc; }
+.span-selection {
+  position: absolute;
+  top: 0.35rem;
+  bottom: 0.35rem;
+  background: var(--accent);
+  opacity: 0.55;
+  border-radius: 2px;
+}
+.span-kill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--err);
+}
+.span-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0.9rem;
+  margin-left: -0.45rem;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.span-handle::after {
+  content: "";
+  position: absolute;
+  left: 0.3rem;
+  right: 0.3rem;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.span-handle:hover::after, .dragging .span-handle::after { background: #163a94; }
+.span-axis { display: flex; justify-content: space-between; }
+
+.shot-controls, .shot-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center; }
+.control { display: inline-flex; gap: 0.3rem; align-items: center; font-size: 0.9rem; }
+.control.grow { flex: 1; min-width: 10rem; }
+.control.grow input { flex: 1; min-width: 0; }
+.shot-controls input[type="number"] { width: 5rem; }
+.shot-buttons { gap: 0.4rem; }
+
+.add-shot { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--line); display: grid; gap: 0.5rem; }
+.add-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.5rem; }
+.add-fields input, .add-fields select { width: 100%; font: inherit; }
+.add-shot button { justify-self: start; }
+
+.clip-mark { color: var(--ok); }
+.shot-buttons button.capture { margin-left: auto; }
+.capture-status {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.capture-status p { margin: 0 0 0.25rem; }
+.capture-status.running { border-color: var(--accent); }
+.capture-status.done { border-color: var(--ok); color: var(--ok); }
+.capture-status.failed { border-color: var(--err); color: var(--err); }
+.capture-status pre {
+  max-height: 12rem;
+  overflow: auto;
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text);
+  white-space: pre-wrap;
+}

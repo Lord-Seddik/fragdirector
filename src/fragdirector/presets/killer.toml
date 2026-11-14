@@ -1,0 +1,53 @@
+# Preset "killer": the killer's view only.
+#
+# Every built-in preset lists every setting. To make your own, write a file
+# with only the lines you want to change, say which built-in preset the rest
+# comes from with  base = "killer"  (the default), and pass it with:
+#   fragdirector plan demo.dem --preset my_preset.toml
+# All times are seconds. A preset only makes the first draft of a shot list.
+
+description = "The killer's view only."
+
+# Which shots are made for each moment, in this order.
+[shots]
+killer = true     # the killer's view of the kills, in real time
+victims = false   # each victim's view of the seconds before their death
+replay = false    # the last kill once more from the killer's view, slowed down
+
+# The killer's view. Kills further apart than split_gap_seconds become
+# separate shots. A shot starts pre-roll before its first kill and ends
+# post-roll after its last one. Both grow with the pace of the shot:
+#   roll = roll_seconds + roll_per_gap_second * (average gap between the
+#          shot's kills, in seconds), but never more than roll_max_seconds.
+[killer]
+split_gap_seconds = 6.0
+pre_roll_seconds = 2.0
+pre_roll_per_gap_second = 0.5
+pre_roll_max_seconds = 4.0
+post_roll_seconds = 1.0
+post_roll_per_gap_second = 0.25
+post_roll_max_seconds = 2.0
+
+# The victims' views: this long before the death, ending on the death tick.
+[victims]
+seconds = 4.0
+
+# The slow-motion replay of a moment's last kill.
+[replay]
+speed = 0.5            # 0.5 = half speed
+before_seconds = 1.5   # demo time before the kill
+after_seconds = 0.5    # demo time after the kill
+
+# No shot is shorter than this in the finished video. A shot that cannot
+# reach it (the player was not alive long enough) is left out.
+[limits]
+min_shot_seconds = 2.0
+
+# Fitting the shot list to a length (see "budget" in director.py).
+[budget]
+seconds = 0.0              # length of the video to aim for; 0 = no budget
+max_stretch = 2.0          # a shot is never made longer than this many times its drafted length
+keep_before_seconds = 1.0  # never cut closer than this before a shot's first kill
+keep_after_seconds = 0.5   # ... or closer than this after its last kill
+victim_weight = 0.5        # a victim's view counts this much of a killer's view when time is split
+replay_weight = 0.7        # same for the slow-motion replay

@@ -1,0 +1,37 @@
+# Preset "victims": each victim's view of the seconds before their death.
+# The settings are explained in killer.toml.
+
+description = "Each victim's view of the seconds before their death."
+
+[shots]
+killer = false
+victims = true
+replay = false
+
+[killer]
+split_gap_seconds = 6.0
+pre_roll_seconds = 2.0
+pre_roll_per_gap_second = 0.5
+pre_roll_max_seconds = 4.0
+post_roll_seconds = 1.0
+post_roll_per_gap_second = 0.25
+post_roll_max_seconds = 2.0
+
+[victims]
+seconds = 5.0
+
+[replay]
+speed = 0.5
+before_seconds = 1.5
+after_seconds = 0.5
+
+[limits]
+min_shot_seconds = 2.0
+
+[budget]
+seconds = 0.0
+max_stretch = 2.0
+keep_before_seconds = 1.0
+keep_after_seconds = 0.5
+victim_weight = 0.5
+replay_weight = 0.7

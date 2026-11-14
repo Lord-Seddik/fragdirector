@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fragdirector</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>fragdirector</h1>
+    <p id="demo-info" class="muted">Loading...</p>
+  </header>
+  <p id="message" class="message" hidden></p>
+
+  <main class="layout">
+    <section class="panel" id="moments-panel" aria-labelledby="moments-heading">
+      <h2 id="moments-heading">Moments <span id="moments-count" class="muted"></span></h2>
+
+      <div class="filters">
+        <label>Player <select id="f-player"></select></label>
+        <label>Round <select id="f-round"></select></label>
+        <label>Kind <select id="f-kind"></select></label>
+        <label>Weapon <select id="f-weapon"></select></label>
+        <label>Tag <select id="f-tag"></select></label>
+        <button type="button" id="f-reset" class="link">Clear filters</button>
+      </div>
+
+      <div class="ticks">
+        <button type="button" id="tick-visible">Tick all shown</button>
+        <button type="button" id="untick-all">Untick all</button>
+        <span id="tick-count" class="muted"></span>
+      </div>
+
+      <ul id="moments" class="moments"></ul>
+
+      <form id="draft" class="draft">
+        <h3>First draft</h3>
+        <label>Preset <select id="preset"></select></label>
+        <p id="preset-description" class="muted small"></p>
+        <label>Budget (seconds, optional)
+          <input type="number" id="budget" min="1" step="1" placeholder="no budget">
+        </label>
+        <label>Timeline
+          <select id="mode">
+            <option value="replace">Replace the current timeline</option>
+            <option value="append">Add to the end of it</option>
+          </select>
+        </label>
+        <button type="submit" id="build" class="primary">Build timeline from ticked moments</button>
+      </form>
+    </section>
+
+    <section class="panel" id="timeline-panel" aria-labelledby="timeline-heading">
+      <h2 id="timeline-heading">Timeline <span id="timeline-total" class="muted"></span></h2>
+      <div class="actions">
+        <button type="button" id="undo" disabled>Undo</button>
+        <button type="button" id="redo" disabled>Redo</button>
+        <button type="button" id="save">Save to file</button>
+        <button type="button" id="reload-file">Reload from file</button>
+        <span id="dirty" class="dirty" hidden>Unsaved changes</span>
+        <span id="save-path" class="muted small"></span>
+      </div>
+      <div id="capture-status" class="capture-status" hidden>
+        <p id="capture-message"></p>
+        <details>
+          <summary>Capture log</summary>
+          <pre id="capture-log"></pre>
+        </details>
+      </div>
+      <ul id="draft-notes" class="notes"></ul>
+      <ul id="problems" class="problems"></ul>
+      <ol id="timeline" class="timeline"></ol>
+
+      <form id="add-shot" class="add-shot">
+        <h3>Add a shot by hand</h3>
+        <div class="add-fields">
+          <label>Round <select id="add-round"></select></label>
+          <label>Start (seconds after the round clock starts)
+            <input type="number" id="add-start" step="0.5">
+          </label>
+          <label>Length (seconds)
+            <input type="number" id="add-length" step="0.5">
+          </label>
+          <label>Player (alive the whole time) <select id="add-player"></select></label>
+          <label>Speed
+            <input type="number" id="add-speed" step="0.05" placeholder="1">
+          </label>
+          <label>Label <input type="text" id="add-label"></label>
+        </div>
+        <button type="submit">Add to the end of the timeline</button>
+      </form>
+    </section>
+  </main>
+  <script src="app.js"></script>
+  <script src="timeline.js"></script>
+</body>
+</html>
