@@ -1,7 +1,7 @@
 # Contributing to fragdirector
 
-Thanks for looking at this. The project is small and the plan is in the open:
-[PLAN.md](PLAN.md) lists every task, what it touches and how it was checked.
+Thanks for looking at this. The project is small; the [README](README.md)
+shows how the parts fit together.
 
 ## Setup
 
@@ -30,11 +30,11 @@ interface, so one can be replaced without touching the others:
 The shot list is the one thing passed between stages. See
 [docs/shotlist.md](docs/shotlist.md).
 
-## Working on a task
+## Working on a change
 
-- Pick a task from `PLAN.md` and check its files and verification step first.
-  Keep to that scope; if you find something else, add it to `PLAN.md` as a new
-  task rather than fixing it in the same change.
+- Keep each change to one thing. If you find something else that needs
+  fixing, open an issue or a separate pull request rather than fixing it in
+  the same change.
 - Add or update tests for the change, then run `pytest`.
 - For changes to the editor, check the page in a browser: the server's
   Content-Security-Policy blocks inline scripts and styles, so keep them in

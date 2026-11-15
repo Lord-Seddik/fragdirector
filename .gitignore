@@ -13,6 +13,11 @@ demos/
 *.mp4
 output/
 
+# Personal planning and assistant setup (kept on disk, not published)
+PLAN.md
+CLAUDE.md
+.claude/
+
 # Editor / OS
 .vscode/
 .idea/

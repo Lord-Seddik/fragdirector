@@ -30,7 +30,7 @@ You also need a `.dem` file of a match. Put it anywhere; the examples below use
 ## Install
 
 ```bash
-git clone https://github.com/<your-account>/fragdirector.git
+git clone https://github.com/Lord-Seddik/fragdirector.git
 cd fragdirector
 pip install -e ".[dev]"
 fragdirector --help
@@ -136,7 +136,6 @@ Nothing is sent anywhere. To report a security problem, open an issue.
 | `src/fragdirector/capture/` | Drives CS2 and records the clips |
 | `src/fragdirector/render.py` | Joins the clips with FFmpeg |
 | `docs/` | How capture and rendering work, and the shot list format |
-| `PLAN.md` | The plan and the task list |
 
 ## Contributing
 
