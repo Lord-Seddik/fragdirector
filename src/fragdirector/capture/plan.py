@@ -32,6 +32,18 @@ SAVED_SETTINGS = {
     "engine_no_focus_sleep": "0",  # full frame rate when the window is not in front
     "r_show_build_info": "0",  # the build line bottom-left
 }
+# Also changed and put back when the sound is recorded (T20).
+SOUND_SETTINGS = {
+    "snd_mute_losefocus": "0",  # the game goes silent when its window is not in front
+    "volume": "0.5",  # the level T20 measured: loud fights peak at about 0.77 of full scale
+}
+# Also changed and put back, always (T21). Not saved by the game, but put back anyway.
+AFTER_DEATH_SETTINGS = {
+    "spec_freeze_time": "10",  # the camera stays on a dead player this long (the game's default is 3)
+}
+# The console line CS2 prints when the camera moves to another player (T21): between
+# the POV player's death and the shot's end it means the shot no longer shows them.
+CAMERA_LEFT = r"Scanned \d+ entities, activated prediction"
 
 # Ticks played before the shot at least, so the two-step pause check
 # (two single ticks) cannot run past the shot's first tick.
@@ -59,16 +71,22 @@ class CaptureOptions:
     picture_delay_seconds: float = 0.06  # the picture trails the tick by this much (T4)
     attempts: int = 3  # seek + record tries per clip
     demo_ui: bool = False  # keep the playback bar (shows the tick; for checking)
+    sound: bool = True  # record the game's sound into each clip
+    sound_delay_seconds: float = 0.12  # the sound cut is moved this much later (T20)
 
     def __post_init__(self) -> None:
         if not 1 <= self.fps <= 240:
             raise CaptureError(f"fps must be between 1 and 240, got {self.fps}")
-        for name in ("preroll_seconds", "settle_seconds", "picture_delay_seconds"):
+        for name in ("preroll_seconds", "settle_seconds", "picture_delay_seconds", "sound_delay_seconds"):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
                 raise CaptureError(f"{name} must be 0 or more, got {value}")
         if self.attempts < 1:
             raise CaptureError(f"attempts must be 1 or more, got {self.attempts}")
+
+    def settings(self) -> dict[str, str]:
+        """The saved game settings to change for this capture."""
+        return {**SAVED_SETTINGS, **AFTER_DEATH_SETTINGS, **(SOUND_SETTINGS if self.sound else {})}
 
 
 @dataclass(frozen=True)
@@ -89,10 +107,16 @@ class Job:
     player_name: str
     seek_tick: int
     clip: Path
+    death_tick: int | None = None  # when the POV player dies in this round; None if they survive
 
     @property
     def ticks(self) -> int:
         return self.end_tick - self.start_tick
+
+    @property
+    def ends_after_death(self) -> bool:
+        """True if the shot runs on past the POV player's death (death camera)."""
+        return self.death_tick is not None and self.end_tick > self.death_tick
 
     def frames(self, fps: int) -> int:
         return round(self.ticks / self.tick_rate * fps)
@@ -100,8 +124,11 @@ class Job:
     def describe(self) -> str:
         numbers = ", ".join(str(i + 1) for i in self.shots)
         seconds = self.ticks / self.tick_rate
-        return (f"shot {numbers}: {self.player_name}, ticks {self.start_tick}-{self.end_tick} "
+        text = (f"shot {numbers}: {self.player_name}, ticks {self.start_tick}-{self.end_tick} "
                 f"({seconds:.1f} s)")
+        if self.ends_after_death:
+            text += f", {(self.end_tick - self.death_tick) / self.tick_rate:.1f} s after the death"
+        return text
 
 
 # --------------------------------------------------------------------------
@@ -114,17 +141,22 @@ def clip_key(shot: Shot) -> tuple[str, int, int, str]:
     return (demo_file_name(shot.demo), shot.start_tick, shot.end_tick, shot.pov_player)
 
 
-def clip_name(shot: Shot) -> str:
-    """File name of a shot's clip. Depends only on the shot, so the video
-    assembler finds the clip from the shot list alone."""
+SOUND_SUFFIX = "_sound"
+
+
+def clip_name(shot: Shot, sound: bool = True) -> str:
+    """File name of a shot's clip. Depends only on the shot (and whether the
+    clip has sound), so the video assembler finds the clip from the shot list
+    alone. A clip with sound ends in ``_sound.mp4``; a clip without has the
+    name v1 used, so old silent clips are never taken for clips with sound."""
     demo, start, end, player = clip_key(shot)
     digest = hashlib.sha1(f"{demo}|{start}|{end}|{player}".encode("utf-8")).hexdigest()[:8]
     readable = _FILE_SAFE.sub("_", player)[:24].strip("_") or "player"
-    return f"{start}-{end}_{readable}_{digest}.mp4"
+    return f"{start}-{end}_{readable}_{digest}{SOUND_SUFFIX if sound else ''}.mp4"
 
 
-def clip_path(shot: Shot, clips_dir: str | Path) -> Path:
-    return Path(clips_dir) / clip_name(shot)
+def clip_path(shot: Shot, clips_dir: str | Path, sound: bool = True) -> Path:
+    return Path(clips_dir) / clip_name(shot, sound)
 
 
 def partial_path(clip: Path) -> Path:
@@ -236,6 +268,9 @@ def plan_jobs(
     for key, indexes in grouped.items():
         shot = shotlist.shots[indexes[0]]
         demo, path = demos[key[0]]
+        rnd = demo.round_at(shot.start_tick)
+        life = rnd.life_of(shot.pov_player) if rnd is not None else None
+        died = life is not None and life.until_tick < rnd.end_tick
         jobs.append(Job(
             shots=tuple(indexes),
             demo_path=Path(path).resolve(),
@@ -245,7 +280,8 @@ def plan_jobs(
             pov_player=shot.pov_player,
             player_name=demo.player_name(shot.pov_player),
             seek_tick=seek_tick_for(shot, demo, options),
-            clip=clip_path(shot, clips_dir),
+            clip=clip_path(shot, clips_dir, options.sound),
+            death_tick=life.until_tick if died else None,
         ))
     jobs.sort(key=lambda job: (str(job.demo_path).casefold(), job.start_tick, job.end_tick, job.pov_player))
     return jobs
@@ -313,12 +349,29 @@ def record_command(ffmpeg: str, raw_path: Path, fps: int, base: int, encoder: li
 
 
 def cut_command(ffmpeg: str, raw_path: Path, offset: float, fps: int, frames: int, out_path: Path) -> list[str]:
-    """Cut the shot out of the raw recording at a constant frame rate, no sound."""
+    """Cut the shot out of the raw recording at a constant frame rate, no sound.
+
+    The sound is added afterwards by ``mux_command``: an output ``-ss`` moves
+    every stream, so one run cannot cut picture and sound at their own
+    points (T20 trap 1)."""
     return [
         ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(raw_path),
         "-ss", f"{offset:.4f}", "-vf", f"fps={fps}", "-frames:v", str(frames),
         "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
         "-movflags", "+faststart", "-an", str(out_path),
+    ]
+
+
+def mux_command(ffmpeg: str, video_path: Path, wav_path: Path, offset: float, seconds: float,
+                out_path: Path) -> list[str]:
+    """Add the sound to a cut picture: the WAV from ``offset`` on, exactly
+    ``seconds`` long (padded with silence if a few samples short)."""
+    return [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(video_path),
+        "-ss", f"{offset:.4f}", "-i", str(wav_path),  # input seek on a WAV is sample-exact
+        "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k", "-af", "apad", "-t", f"{seconds:.4f}",
+        "-movflags", "+faststart", str(out_path),
     ]
 
 
@@ -370,5 +423,36 @@ def cut_offset(
     The time of the start tick is counted back from the final pause; the
     picture shows a tick ``picture_delay`` after the game reaches it.
     """
-    shot_start = playback.t_paused - (playback.final_tick - start_tick) * seconds_per_tick(playback, tick_rate)
-    return shot_start + picture_delay - record_base - raw_start
+    return shot_start_time(playback, start_tick, tick_rate) + picture_delay - record_base - raw_start
+
+
+def shot_start_time(playback: Playback, start_tick: int, tick_rate: int) -> float:
+    """Wall clock when the game reached the shot's first tick."""
+    return playback.t_paused - (playback.final_tick - start_tick) * seconds_per_tick(playback, tick_rate)
+
+
+def camera_left_victim(lines: Iterable[tuple[float, str]], playback: Playback, job: Job) -> float | None:
+    """Seconds after the POV player's death at which CS2 moved the camera to
+    another player, or ``None`` if it did not (or the shot ends before the death).
+
+    ``lines`` are the console lines (arrival time, text) from just before the
+    shot's playback. Only a ``CAMERA_LEFT`` line between the death and the end
+    of the playback counts; the time of the death is counted back from the
+    final pause, like the shot's start (T21 matched the picture within 0.05 s).
+    """
+    if not job.ends_after_death:
+        return None
+    died = shot_start_time(playback, job.death_tick, job.tick_rate)
+    rx = re.compile(CAMERA_LEFT)
+    for when, text in lines:
+        if died < when <= playback.t_paused and rx.search(text):
+            return when - died
+    return None
+
+
+def sound_offset(playback: Playback, start_tick: int, tick_rate: int, sound_start: float,
+                 sound_delay: float) -> float:
+    """Seconds into the sound recording (which starts at wall clock
+    ``sound_start``) where the shot's sound begins. The sound reaches the
+    recorder later than the picture; T20 measured ``sound_delay`` = 0.12 s."""
+    return shot_start_time(playback, start_tick, tick_rate) + sound_delay - sound_start

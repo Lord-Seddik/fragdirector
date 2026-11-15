@@ -145,6 +145,24 @@ button.link { border: 0; background: none; color: var(--accent); padding: 0; tex
   touch-action: none;
 }
 .span-alive { position: absolute; top: 0; bottom: 0; background: #d3ecdc; }
+/* The time after the player's death that a shot may still use, and the part of
+   the shot that lies in it (T24). */
+.span-after-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(135deg, #f6e3bd 0 4px, #fbf1dc 4px 8px);
+}
+.span-selection-after {
+  position: absolute;
+  top: 0.35rem;
+  bottom: 0.35rem;
+  background: #c26a00;
+  opacity: 0.8;
+  border-radius: 2px;
+  pointer-events: none;
+}
+.after-death-note { color: #8a4b00; }
 .span-selection {
   position: absolute;
   top: 0.35rem;

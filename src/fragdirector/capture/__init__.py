@@ -6,6 +6,7 @@ The method (TCP console + FFmpeg window capture) was chosen in spike T4;
 
 * ``plan``  pure: shot list -> jobs, clip names, console and FFmpeg commands
 * ``game``  the CS2 console, the game session, the window recorder
+* ``sound`` the recorder for the game's own sound (spike T20)
 * ``run``   one game session for a list of jobs, resumable
 """
 

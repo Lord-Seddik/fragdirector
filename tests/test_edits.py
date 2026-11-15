@@ -35,11 +35,15 @@ def test_insert(shots, demo):
     assert labels(edits.insert(shots, demo, new, 2)) == "abxc"
     assert labels(edits.insert(shots, demo, new, 3)) == "abcx"
     assert labels(shots) == "abc"  # the original is untouched
+    # p3 dies at 7500: a shot may follow them for up to 5 s (320 ticks) more.
+    assert labels(edits.insert(shots, demo, shot(7000, 7820, P3, label="y"))) == "abcy"
 
 
 def test_insert_refuses_invalid_shots(shots, demo):
-    with pytest.raises(EditError, match="no longer alive"):
-        edits.insert(shots, demo, shot(7000, 7600, P3))  # dies at 7500
+    with pytest.raises(EditError, match="dies at tick 7500"):
+        edits.insert(shots, demo, shot(7000, 7821, P3))  # more than 5 s after the death
+    with pytest.raises(EditError, match="has to start while its player is alive"):
+        edits.insert(shots, demo, shot(7500, 7600, P3))  # starts on the death tick
     with pytest.raises(EditError, match="after round 1 is over"):
         edits.insert(shots, demo, shot(4000, 5500, P1))
     with pytest.raises(EditError, match="no shot at position"):
@@ -86,6 +90,8 @@ def test_trim(shots, demo):
     assert result.shots[0].end_tick == 5000
     result = edits.trim(shots, demo, 1, start_tick=1000, end_tick=3000)  # whole life
     assert (result.shots[1].start_tick, result.shots[1].end_tick) == (1000, 3000)
+    result = edits.trim(shots, demo, 1, end_tick=3320)  # 5 s past P3's death at 3000
+    assert (result.shots[1].start_tick, result.shots[1].end_tick) == (2600, 3320)
     assert shots.shots[0].start_tick == 2000
 
 
@@ -94,6 +100,10 @@ def test_trim_by(shots, demo):
     assert (result.shots[0].start_tick, result.shots[0].end_tick) == (1968, 3232)
     result = edits.trim_by(shots, demo, 0, end_delta=-32)
     assert result.shots[0].end_tick == 3168
+    result = edits.trim_by(shots, demo, 1, end_delta=96)  # 1.5 s past P3's death
+    assert result.shots[1].end_tick == 3096
+    result = edits.trim_by(result, demo, 1, end_delta=224)  # up to the limit
+    assert result.shots[1].end_tick == 3320
 
 
 def test_trim_refuses_invalid_results(shots, demo):
@@ -101,8 +111,10 @@ def test_trim_refuses_invalid_results(shots, demo):
         edits.trim(shots, demo, 0, end_tick=5001)
     with pytest.raises(EditError, match="not inside any round"):
         edits.trim(shots, demo, 0, start_tick=999)
-    with pytest.raises(EditError, match="no longer alive from tick 3000"):
-        edits.trim_by(shots, demo, 1, end_delta=1)  # P3 dies at 3000
+    with pytest.raises(EditError, match="to tick 3320; this one ends at tick 3321"):
+        edits.trim_by(shots, demo, 1, end_delta=321)  # P3 dies at 3000, 5 s is 320 ticks
+    with pytest.raises(EditError, match="no longer alive from tick 3000; the shot starts"):
+        edits.trim(shots, demo, 1, start_tick=3000, end_tick=3100)
     with pytest.raises(EditError, match="must start before it ends"):
         edits.trim(shots, demo, 0, start_tick=3200)
     with pytest.raises(EditError, match="must start before it ends"):
@@ -120,8 +132,14 @@ def test_trim_refuses_invalid_results(shots, demo):
 
 def test_change_pov(shots, demo):
     assert edits.change_pov(shots, demo, 1, P4).shots[1].pov_player == P4
-    with pytest.raises(EditError, match="no longer alive"):
-        edits.change_pov(shots, demo, 0, P3)  # shot runs to 3200, P3 dies at 3000
+    # Shot 0 runs to 3200 and P3 dies at 3000: a player who dies during the
+    # shot can be followed, as long as it ends within 5 s of the death.
+    assert edits.change_pov(shots, demo, 0, P3).shots[0].pov_player == P3
+    with pytest.raises(EditError, match="dies at tick 7000"):
+        edits.change_pov(shots, demo, 2, P1)  # shot runs to 7400, limit is 7320
+    late = edits.insert(shots, demo, shot(3100, 3200, P1))
+    with pytest.raises(EditError, match="has to start while its player is alive"):
+        edits.change_pov(late, demo, 3, P3)  # P3 is already dead at 3100
     with pytest.raises(EditError, match="not in this demo"):
         edits.change_pov(shots, demo, 0, "nobody")
     with pytest.raises(EditError):
@@ -174,7 +192,7 @@ def random_edit(rng: random.Random, shots: ShotList, demo) -> ShotList:
 def test_random_edits_never_break_the_list(demo, seed):
     rng = random.Random(seed)
     shots = ShotList()
-    accepted = refused = 0
+    accepted = refused = after_death = 0
     for _ in range(3000):
         before = shots
         try:
@@ -186,6 +204,10 @@ def test_random_edits_never_break_the_list(demo, seed):
             refused += 1
             continue
         assert shotlist_problems(shots, demo) == []
+        for s in shots.shots:
+            assert demo.is_alive(s.pov_player, s.start_tick)
+            after_death += not demo.is_alive(s.pov_player, s.end_tick - 1)
         if len(shots) > 12:  # keep the list small so deletes and moves stay likely
             shots = edits.delete(shots, 0)
     assert accepted > 300 and refused > 300
+    assert after_death > 0  # shots that run on after a death were tried and kept

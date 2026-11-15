@@ -1,4 +1,4 @@
-# Making the video (T13)
+# Making the video (T13, sound T27)
 
 `fragdirector render shots.json` joins the clips that `fragdirector capture`
 wrote into one `.mp4`. The editor's **Make video** button does the same.
@@ -7,21 +7,24 @@ wrote into one `.mp4`. The editor's **Make video** button does the same.
 fragdirector render shots.json                      # hard cuts, writes shots.mp4
 fragdirector render shots.json --crossfade 0.4      # fade between shots
 fragdirector render shots.json --labels             # write each shot's label on the picture
+fragdirector render shots.json --no-sound           # a video with no sound track
 fragdirector render shots.json --out reel.mp4 --force
 fragdirector render shots.json --dry-run            # check the clips, print the FFmpeg command
 ```
 
 Options: `--clips DIR` (default: `clips` next to the shot list), `--out PATH`
 (must end in `.mp4`; default: the shot list's name with `.mp4`), `--crf N`
-(x264 quality, 0-51, default 18), `--force` (replace an existing video).
+(x264 quality, 0-51, default 18), `--force` (replace an existing video),
+`--no-sound` (no sound track; default: the clips' sound).
 
 ## What it does
 
 One FFmpeg run, no intermediate files:
 
 1. Each shot's clip is found from the shot list alone (`capture.clip_path`).
-   A shot with no clip stops the render and the message lists which ones to
-   capture.
+   The clip with sound (`..._sound.mp4`) is used if it exists, otherwise the
+   silent v1 name (an old clip, or one captured with `--no-sound`). A shot
+   with neither stops the render and the message lists which ones to capture.
 2. Each clip is cut to the shot's on-screen length and its **speed** is
    applied. Slow motion repeats frames, so 0.5x of a 60 fps clip shows 30
    different pictures per second; fast motion drops frames.
@@ -31,7 +34,28 @@ One FFmpeg run, no intermediate files:
 5. The result is encoded as H.264, yuv420p, at the first clip's frame rate
    and size (a clip of another size is fitted with black bars).
 
-The video has **no sound**, like the clips.
+## Sound
+
+Each shot's sound follows its picture through the same steps, in the same
+FFmpeg run:
+
+- It is cut to the part of the clip the shot uses, then **slowed or sped up
+  with `atempo`**, so the pitch stays the same (0.5x is half speed, same
+  voice; speeds beyond 0.5-2 are done in several steps).
+- It is padded with silence or cut to exactly the length of its picture, so
+  a shot's sound can never drift from its picture.
+- Hard cuts join the sound with `concat`; `--crossfade` joins it with
+  `acrossfade` and the same overlap as the picture.
+- A clip with no sound (an old v1 clip, or one captured with `--no-sound`)
+  gets silence for its length, and the log says which shots. If no clip has
+  sound the video still gets a (silent) sound track; capture again for sound.
+- Sound is encoded as AAC, 192 kb/s, 48 kHz stereo. Whatever the clips hold
+  (mono, other rates) is converted.
+- The finished file's sound track is checked against its picture (within
+  0.1 s) before it is kept.
+- `--no-sound` writes a video with **no sound track** at all (the v1 result).
+  The editor's **Make video** always includes sound; its `POST /api/render`
+  also accepts `"sound": false`.
 
 ## Length
 
@@ -53,6 +77,10 @@ be at least twice the crossfade long, otherwise the render is refused.
   is written as it is. The font is Arial on Windows (DejaVu or Arial elsewhere);
   characters the font lacks (for example some CJK names) show as boxes. Labels
   need an FFmpeg with the `drawtext` filter (the "full" builds have it).
+- Checked on the sample demo (8 clips with sound, one at 0.5x): picture and
+  sound both 44.77 s; with shot 2 also at 0.5x and a 0.4 s crossfade, both
+  59.73 s. Compared with the clips' own sound, each hard-cut shot starts at
+  0 ms offset, the 0.5x shot within 20 ms. Not checked by ear.
 - Needs `ffmpeg` and `ffprobe` on PATH. Unlike capture, it does not need
   FFmpeg 8 or Windows (tested here with FFmpeg 9.0.2 on Windows only).
 - A shot list of more than about 270 shots (about 90 with labels) is refused, because

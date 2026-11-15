@@ -28,9 +28,12 @@ post_roll_seconds = 1.0
 post_roll_per_gap_second = 0.25
 post_roll_max_seconds = 2.0
 
-# The victims' views: this long before the death, ending on the death tick.
+# The victims' views: this long before the death, then after_death_seconds
+# more on the camera the game puts by the body (0 = end on the death tick).
+# The extra time is cut at the end of the round, and can be at most 5.
 [victims]
 seconds = 4.0
+after_death_seconds = 1.5
 
 # The slow-motion replay of a moment's last kill.
 [replay]

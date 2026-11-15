@@ -105,6 +105,8 @@ def test_demo_endpoint(client, tmp_path):
     assert [r["number"] for r in data["rounds"]] == [1, 2]
     assert data["rounds"][0]["lives"][0]["player"] == P1
     assert "killer" in data["presets"] and "victims" in data["presets"]
+    # The page needs the limit to draw the time after a death (5 s = 320 ticks at 64).
+    assert data["after_death_seconds"] == 5 and data["after_death_ticks"] == 320
     assert data["save_path"] == str(tmp_path / "shots.json")
 
 
@@ -252,12 +254,12 @@ def test_invalid_edits_are_refused_and_change_nothing(client, operation, body, f
 
 
 def test_edit_that_kills_the_pov_player_is_refused_with_a_clear_message(client):
-    # Round 1: p3 dies at tick 3000.
+    # Round 1: p3 dies at tick 3000; a shot may run on for 5 s (320 ticks).
     client.post("/api/edit/insert", {"shot": {"start_tick": 2900, "end_tick": 3000, "pov_player": P3}})
     before = client.get("/api/shotlist")[1]
-    status, data = client.post("/api/edit/trim", {"index": 3, "end_tick": 3001})
+    status, data = client.post("/api/edit/trim", {"index": 3, "end_tick": 3321})
     assert status == 422
-    assert "donk is no longer alive from tick 3000" in data["error"]
+    assert "donk dies at tick 3000" in data["error"]
     assert client.get("/api/shotlist")[1] == before
 
 
@@ -599,11 +601,11 @@ def test_invalid_capture_requests(make_client, tmp_path, body, status, fragment)
 
 
 def test_capture_of_an_invalid_shot_is_refused(make_client, tmp_path):
-    bad = ShotList(shots=(shot(2000, 3100, P3),), tick_rate=64)  # donk dies at 3000
+    bad = ShotList(shots=(shot(2000, 3400, P3),), tick_rate=64)  # donk dies at 3000, limit 3320
     runner = FakeRunner()
     client = make_client(bad, clips_dir=tmp_path / "clips", capture_runner=runner)
     status, data = client.post("/api/capture", {"index": 0})
-    assert status == 422 and "no longer alive" in data["error"]
+    assert status == 422 and "dies at tick 3000" in data["error"]
     assert not runner.jobs
 
 

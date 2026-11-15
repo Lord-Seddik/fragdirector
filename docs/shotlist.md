@@ -56,8 +56,9 @@ are not part of the validity check, so a hand-edited file may break them.
   The same ticks through another player, or through the same player at
   another speed (the slow-motion replay), are fine. `wrong_overlaps` in
   `director.py` checks this.
-- **A victim's shot ends exactly on the death tick**, the latest end the
-  check below allows.
+- **A victim's shot runs 1.5 s past the death tick** (`after_death_seconds`
+  in the `[victims]` section of a preset; 0 ends it on the death tick). It
+  is cut at the end of the round. The check below allows up to 5 s.
 - **Length means length in the finished video**, slow motion included (the
   formula above). The minimum shot length and `--budget` both use it.
 
@@ -80,14 +81,26 @@ Checked against the demo (`shot_problems` / `shotlist_problems` in
   than that round's `end_tick`. A round runs from the spawn at the start of
   freeze time until the next round begins, so a shot may continue after the
   last kill.
-- **POV player alive.** The player is alive from `start_tick` to
-  `end_tick`. A player counts as alive up to, but not on, the tick of their
-  death, so a victim's shot can end exactly on their death tick and no
-  later.
+- **Starts while the POV player is alive.** The player has spawned and is
+  not dead yet on `start_tick`. A player counts as alive up to, but not on,
+  the tick of their death, so a shot cannot start on the death tick.
+- **Ends at most 5 s after the POV player's death.** A shot may keep going
+  after its player dies, to show the death and what follows from their
+  side: `end_tick` can be up to 5 seconds' worth of ticks (320 at 64 ticks
+  per second) after the death tick, and never after the round's
+  `end_tick`. After the death the game shows a still camera next to the
+  body (see `capture.md`, "After death"). The 5 s is
+  `AFTER_DEATH_SECONDS` in `models.py`; it is how long capture can keep
+  the camera there safely. A player who survives the round can be followed
+  to the round's end.
 - **Same demo.** The file name in `demo` matches the demo being checked.
   Only the file name is compared, so `demos/match.dem` and
   `C:\Demos\match.dem` are the same demo.
 - **Same tick rate** as the demo (for the list as a whole).
+
+Shot lists written before shots could run on after a death (when the
+player had to be alive for the whole shot) are still valid: the format and
+`version` are the same, and the rule only became wider.
 
 ## Edit operations
 
@@ -103,16 +116,22 @@ Positions count from 0.
 | `duplicate(shotlist, index)` | Put a copy right after the shot. |
 | `trim(shotlist, demo, index, start_tick=None, end_tick=None)` | Set a new start and/or end. |
 | `trim_by(shotlist, demo, index, start_delta=0, end_delta=0)` | Shift start and/or end by ticks (`end_delta=32` is +0.5 s at 64 ticks). |
-| `change_pov(shotlist, demo, index, pov_player)` | Show the same span through another player. |
+| `change_pov(shotlist, demo, index, pov_player)` | Show the same span through another player, who may die during it. |
 | `set_speed(shotlist, index, speed)` | Set slow motion or speed-up. |
 | `set_label(shotlist, index, label)` | Set the label. |
 
 An edit that would break one of the rules above is refused with an
 `EditError`. Its message is written for the user, for example
-`donk is no longer alive from tick 3000; the shot ends at tick 3001.`
-Nothing is clamped silently. To know in advance how far a shot can be
-stretched, or which players it can switch to, use `Demo.allowed_span` and
-`Demo.players_alive_during`.
+`donk dies at tick 3000. A shot can stay on them for 5 s after that, to
+tick 3320; this one ends at tick 3321.` or `donk is no longer alive from
+tick 3000; the shot starts at tick 3100. A shot has to start while its
+player is alive.` Nothing is clamped silently.
+
+To know in advance how far a shot can be stretched, or which players it
+can switch to, use `Demo.allowed_span` and `Demo.allowed_players`; both
+include the time after a death. `Demo.is_alive`, `Demo.alive_span` and
+`Demo.players_alive_during` answer the plain question of who is alive
+when.
 
 Only the shot being edited is checked, so a hand-edited file with a problem
 in one shot can still be repaired in the editor.

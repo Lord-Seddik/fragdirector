@@ -5,7 +5,11 @@ Input is the shot list and the folder of clips ``fragdirector capture`` wrote
 needed). One FFmpeg run cuts every clip to its length, applies the shot's
 speed (slow motion repeats frames; fast motion drops them), optionally writes
 the shot's label on the picture, joins the shots with a hard cut or a
-crossfade, and encodes the result. The video has no sound, like the clips.
+crossfade, and encodes the result. The sound of each clip goes the same way
+(T27): cut to the shot's length, slowed with ``atempo`` (same pitch), joined
+with ``concat`` or ``acrossfade``; a clip without sound (an old v1 clip, or one
+captured with ``--no-sound``) gets silence. ``RenderOptions.sound = False``
+writes a video with no sound track.
 
 Everything up to ``render_video`` is pure and testable without FFmpeg: the
 timing sums, the filter graph and the command line. FFmpeg and FFprobe are
@@ -36,6 +40,9 @@ Log = Callable[[str], None]
 
 MAX_CROSSFADE_SECONDS = 5.0
 MAX_FILTER_CHARS = 30000  # Windows refuses command lines near 32 000 characters
+AUDIO_RATE = 48000
+AUDIO_BITRATE = "192k"
+AUDIO_TOLERANCE_SECONDS = 0.1  # how far the finished sound track may differ from the picture
 FONT_SIZE_DIVISOR = 24  # label height is the picture height / 24
 FONT_CANDIDATES = (
     "{SYSTEMROOT}/Fonts/arial.ttf",
@@ -62,6 +69,7 @@ class RenderOptions:
     label_seconds: float = 3.0
     crf: int = 18  # x264 quality; lower is better and bigger
     fps: int | None = None  # None = the frame rate of the first clip
+    sound: bool = True  # carry the clips' sound (silence for a clip without); False = no sound track
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.crossfade_seconds) or not 0 <= self.crossfade_seconds <= MAX_CROSSFADE_SECONDS:
@@ -87,6 +95,7 @@ class ClipInfo:
     height: int
     fps: Fraction
     seconds: float
+    has_audio: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,6 +109,8 @@ class Segment:
     label: str
     width: int
     height: int
+    source_seconds: float = 0.0  # how much of the clip the shot uses (before the speed)
+    has_audio: bool = False  # the clip has a sound track
 
 
 @dataclass(frozen=True)
@@ -110,6 +121,7 @@ class RenderResult:
     frames: int  # counted in the finished file
     seconds: float  # frames / fps
     expected_seconds: float
+    audio_seconds: float | None = None  # length of the sound track; None = the video has none
 
 
 # --------------------------------------------------------------------------
@@ -161,9 +173,23 @@ def check_crossfade(frames: list[int], fade: int, fps: int) -> None:
 # --------------------------------------------------------------------------
 
 
+def clip_candidates(shot: Shot, clips_dir: str | Path, prefer_sound: bool = True) -> list[Path]:
+    """The file names a shot's clip may have, best first: the clip with sound
+    (``_sound``) and the v1 silent name. Both hold the same picture."""
+    order = (True, False) if prefer_sound else (False, True)
+    return [clip_path(shot, clips_dir, sound) for sound in order]
+
+
+def find_clip(shot: Shot, clips_dir: str | Path, prefer_sound: bool = True) -> Path:
+    """The shot's clip file that exists, else the name capture would write
+    (so a message can name it)."""
+    candidates = clip_candidates(shot, clips_dir, prefer_sound)
+    return next((path for path in candidates if path.is_file()), candidates[0])
+
+
 def missing_clips(shotlist: ShotList, clips_dir: str | Path) -> list[int]:
-    """Positions (from 0) of the shots that have no clip file yet."""
-    return [i for i, shot in enumerate(shotlist.shots) if not clip_path(shot, clips_dir).is_file()]
+    """Positions (from 0) of the shots that have no clip file yet (with or without sound)."""
+    return [i for i, shot in enumerate(shotlist.shots) if not find_clip(shot, clips_dir).is_file()]
 
 
 def missing_clips_message(missing: list[int], count: int) -> str:
@@ -175,11 +201,15 @@ def missing_clips_message(missing: list[int], count: int) -> str:
 
 
 def plan_segments(
-    shotlist: ShotList, clips_dir: str | Path, clips: dict[Path, ClipInfo], fps: int
+    shotlist: ShotList,
+    clips_dir: str | Path,
+    clips: dict[Path, ClipInfo],
+    fps: int,
+    prefer_sound: bool = True,
 ) -> list[Segment]:
     segments = []
     for position, shot in enumerate(shotlist.shots):
-        path = clip_path(shot, clips_dir)
+        path = find_clip(shot, clips_dir, prefer_sound)
         info = clips[path]
         segments.append(Segment(
             position=position,
@@ -189,6 +219,8 @@ def plan_segments(
             label=" ".join(shot.label.split()),
             width=info.width,
             height=info.height,
+            source_seconds=shot.ticks / shotlist.tick_rate,
+            has_audio=info.has_audio,
         ))
     return segments
 
@@ -221,6 +253,62 @@ def label_filter(label_file: str, font: str | None, height: int, seconds: float)
     return "drawtext=" + ":".join(options)
 
 
+def tempo_steps(speed: float) -> list[str]:
+    """``atempo`` steps for a speed: each step is kept within 0.5-2 (older FFmpeg
+    builds refuse more). The pitch stays the same (decision of the v2 plan)."""
+    steps = []
+    remaining = speed
+    while remaining > 2:
+        steps.append("atempo=2")
+        remaining /= 2
+    while remaining < 0.5:
+        steps.append("atempo=0.5")
+        remaining *= 2
+    steps.append(f"atempo={remaining:.10g}")
+    return steps
+
+
+def audio_chain(index: int, seg: Segment, fps: int) -> str:
+    """One shot's sound, exactly as long as its picture (``[a<index>]``).
+
+    Cut to the part of the clip the shot uses, slowed or sped up with the
+    picture, then padded with silence or cut to the picture's length, so
+    every shot's sound and picture are the same length and stay together."""
+    seconds = seg.frames / fps
+    if not seg.has_audio:
+        return (f"anullsrc=r={AUDIO_RATE}:cl=stereo,atrim=end={seconds:.6f},"
+                f"asetpts=PTS-STARTPTS[a{index}]")
+    steps = [
+        f"aformat=sample_fmts=fltp:sample_rates={AUDIO_RATE}:channel_layouts=stereo",
+        f"atrim=end={seg.source_seconds:.6f}",
+        "asetpts=PTS-STARTPTS",
+    ]
+    if seg.speed != 1:
+        steps += tempo_steps(seg.speed)
+    steps += [f"apad=whole_dur={seconds:.6f}", f"atrim=end={seconds:.6f}", "asetpts=PTS-STARTPTS"]
+    return f"[{index}:a]" + ",".join(steps) + f"[a{index}]"
+
+
+def audio_graph(segments: list[Segment], fps: int, fade: int) -> list[str]:
+    """The sound half of the filter graph; its output is ``[aout]``. Joins like the picture:
+    ``concat`` for hard cuts, ``acrossfade`` (the same overlap) for a crossfade."""
+    chains = [audio_chain(index, seg, fps) for index, seg in enumerate(segments)]
+    if len(segments) == 1:
+        chains.append("[a0]anull[aout]")
+    elif fade == 0:
+        joined = "".join(f"[a{i}]" for i in range(len(segments)))
+        chains.append(f"{joined}concat=n={len(segments)}:v=0:a=1[aout]")
+    else:
+        previous = "a0"
+        for index in range(1, len(segments)):
+            name = "aout" if index == len(segments) - 1 else f"ax{index}"
+            chains.append(
+                f"[{previous}][a{index}]acrossfade=d={fade / fps:.6f}:c1=tri:c2=tri[{name}]"
+            )
+            previous = name
+    return chains
+
+
 def filter_graph(
     segments: list[Segment],
     width: int,
@@ -230,7 +318,7 @@ def filter_graph(
     font: str | None = None,
     label_files: dict[int, str] | None = None,
 ) -> str:
-    """The FFmpeg filter graph; its output is ``[vout]``.
+    """The FFmpeg filter graph; its outputs are ``[vout]`` and, with ``options.sound``, ``[aout]``.
 
     ``label_files`` maps a shot position to the text file holding its label;
     shots without an entry get no label."""
@@ -271,6 +359,8 @@ def filter_graph(
             )
             length += segments[index].frames - fade
             previous = name
+    if options.sound:
+        chains += audio_graph(segments, fps, fade)
     graph = ";".join(chains)
     if len(graph) > MAX_FILTER_CHARS:
         raise RenderError(f"The shot list has too many shots for one video ({len(segments)}); render it in parts.")
@@ -283,12 +373,15 @@ def render_command(
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostats", "-y"]
     for seg in segments:
         command += ["-i", str(seg.clip)]
-    command += [
-        "-filter_complex", graph, "-map", "[vout]",
-        "-c:v", "libx264", "-preset", "medium", "-crf", str(options.crf), "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", "-an", "-f", "mp4",
-        "-progress", "pipe:1", str(out_path),
-    ]
+    command += ["-filter_complex", graph, "-map", "[vout]"]
+    if options.sound:
+        command += ["-map", "[aout]"]
+    command += ["-c:v", "libx264", "-preset", "medium", "-crf", str(options.crf), "-pix_fmt", "yuv420p"]
+    if options.sound:
+        command += ["-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ar", str(AUDIO_RATE)]
+    else:
+        command += ["-an"]
+    command += ["-movflags", "+faststart", "-f", "mp4", "-progress", "pipe:1", str(out_path)]
     return command
 
 
@@ -299,9 +392,9 @@ def check_output_path(out_path: Path, clips_dir: str | Path, shotlist: ShotList)
         raise RenderError(f"'{out_path}' is a folder.")
     resolved = out_path.resolve()
     for shot in shotlist.shots:
-        clip = clip_path(shot, clips_dir)
-        if clip.exists() and clip.resolve() == resolved:
-            raise RenderError("The video would overwrite one of the clips it is made from.")
+        for clip in clip_candidates(shot, clips_dir):
+            if clip.exists() and clip.resolve() == resolved:
+                raise RenderError("The video would overwrite one of the clips it is made from.")
 
 
 # --------------------------------------------------------------------------
@@ -367,7 +460,29 @@ def probe_clip(tools: Tools, path: Path) -> ClipInfo:
         raise RenderError(f"{path.name} is not a readable video clip (delete it and capture the shot again).") from error
     if width <= 0 or height <= 0 or fps <= 0:
         raise RenderError(f"{path.name} is not a readable video clip (delete it and capture the shot again).")
-    return ClipInfo(width, height, fps, seconds)
+    return ClipInfo(width, height, fps, seconds, has_audio=has_audio_stream(tools, path))
+
+
+def has_audio_stream(tools: Tools, path: Path) -> bool:
+    out = subprocess.run(
+        [tools.ffprobe, "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_type", "-of", "default=nw=1:nk=1", str(path)],
+        capture_output=True, text=True,
+    ).stdout
+    return out.strip() == "audio"
+
+
+def audio_seconds(tools: Tools, path: Path) -> float | None:
+    """Length of the file's sound track, or None if it has none."""
+    out = subprocess.run(
+        [tools.ffprobe, "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=duration", "-of", "default=nw=1:nk=1", str(path)],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    try:
+        return float(out)
+    except ValueError:
+        return None
 
 
 def count_frames(tools: Tools, path: Path) -> int:
@@ -436,12 +551,14 @@ def render_video(
         raise RenderError(missing_clips_message(missing, len(shotlist.shots)))
 
     tools = find_tools(need_drawtext=options.labels)
-    clips = {path: probe_clip(tools, path) for path in dict.fromkeys(clip_path(s, clips_dir) for s in shotlist.shots)}
-    first = clips[clip_path(shotlist.shots[0], clips_dir)]
+    prefer_sound = options.sound
+    paths = [find_clip(shot, clips_dir, prefer_sound) for shot in shotlist.shots]
+    clips = {path: probe_clip(tools, path) for path in dict.fromkeys(paths)}
+    first = clips[paths[0]]
     fps = options.fps or max(1, round(first.fps))
     width, height = first.width, first.height
 
-    segments = plan_segments(shotlist, clips_dir, clips, fps)
+    segments = plan_segments(shotlist, clips_dir, clips, fps, prefer_sound)
     fade = crossfade_frames(options, fps)
     check_crossfade([s.frames for s in segments], fade, fps)
     for seg in segments:
@@ -455,6 +572,14 @@ def render_video(
     total = video_frames([s.frames for s in segments], fade)
     expected = total / fps
     log(f"{len(segments)} shot(s), {width}x{height} at {fps} fps, about {expected:.1f} s")
+    if options.sound:
+        silent = [seg.position for seg in segments if not seg.has_audio]
+        if len(silent) == len(segments):
+            log("none of the clips has sound; the video gets a silent sound track "
+                "(capture the shots again without --no-sound for the game's sound)")
+        elif silent:
+            numbers = ", ".join(str(i + 1) for i in silent[:12]) + (", ..." if len(silent) > 12 else "")
+            log(f"{len(silent)} clip(s) have no sound (shot {numbers}); they get silence")
 
     font = find_font() if options.labels else None
     work = Path(tempfile.mkdtemp(prefix="fragdirector_render_"))
@@ -479,9 +604,19 @@ def render_video(
         slack = 0 if fade == 0 else len(segments)
         if abs(got - total) > slack:
             raise RenderError(f"The video has {got} frames; the shot list needs {total}. Nothing was kept.")
+        sound_seconds = None
+        if options.sound:
+            sound_seconds = audio_seconds(tools, part)
+            if sound_seconds is None or abs(sound_seconds - got / fps) > AUDIO_TOLERANCE_SECONDS:
+                have = "no sound track" if sound_seconds is None else f"{sound_seconds:.2f} s of sound"
+                raise RenderError(
+                    f"The video has {got / fps:.2f} s of picture but {have}. Nothing was kept."
+                )
         os.replace(part, out_path)
     finally:
         part.unlink(missing_ok=True)
         shutil.rmtree(work, ignore_errors=True)
-    log(f"wrote {out_path.name}: {got} frames, {got / fps:.2f} s")
-    return RenderResult(out_path, len(segments), fps, got, got / fps, expected_seconds(shotlist, options))
+    log(f"wrote {out_path.name}: {got} frames, {got / fps:.2f} s"
+        + (f", {sound_seconds:.2f} s of sound" if sound_seconds is not None else ", no sound"))
+    return RenderResult(out_path, len(segments), fps, got, got / fps, expected_seconds(shotlist, options),
+                        sound_seconds)

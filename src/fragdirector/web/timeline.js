@@ -55,12 +55,30 @@ function lengthText(startTick, endTick, speed, rate) {
   return formatSeconds(seconds) + (speed === 1 ? "" : ` at ${speed}x`);
 }
 
-// Players alive for the whole of a span, in the round it starts in.
-function playersAliveDuring(startTick, endTick, rnd = roundOf(startTick)) {
+// The latest end a shot following this life may have: the end of the round for
+// a survivor, else the death tick plus the time after death (state.demo), cut
+// at the end of the round. The same rule as Demo.latest_shot_end on the server.
+function latestShotEnd(rnd, life) {
+  if (life.until_tick >= rnd.end_tick) return rnd.end_tick;
+  return Math.min(life.until_tick + state.demo.after_death_ticks, rnd.end_tick);
+}
+
+// Players a shot over this span could follow: alive when it starts, and not
+// dead for longer than the limit when it ends. The server has the last word.
+function playersForSpan(startTick, endTick, rnd = roundOf(startTick)) {
   if (!rnd) return [];
   return rnd.lives
-    .filter((life) => life.from_tick <= startTick && endTick <= life.until_tick)
+    .filter((life) => life.from_tick <= startTick && startTick < life.until_tick
+      && endTick <= latestShotEnd(rnd, life))
     .map((life) => life.player);
+}
+
+// "Ends 1.5 s after X dies ..." for a shot that runs past its player's death, else "".
+function afterDeathText(shot, endTick, rnd) {
+  const life = rnd ? rnd.lives.find((l) => l.player === shot.pov_player) : null;
+  if (!life || endTick <= life.until_tick) return "";
+  const seconds = (endTick - life.until_tick) / state.shotlist.tick_rate;
+  return `Ends ${formatSeconds(seconds)} after ${playerName(shot.pov_player)} dies, on the game's camera by the body.`;
 }
 
 function sortedByName(ids) {
@@ -326,7 +344,9 @@ function nudgeButtons(index, which) {
 }
 
 // The bar under a shot: the shot inside its round (with some margin), the
-// time its player is alive, the kills, and a handle at each end to drag.
+// time its player is alive, the time after their death a shot may still use
+// (hatched), the kills, and a handle at each end to drag. The part of the shot
+// after the death has its own colour.
 function spanBar(shot, index, rnd, onDragText) {
   const rate = state.shotlist.tick_rate;
   const padding = Math.max(5 * rate, Math.round((shot.end_tick - shot.start_tick) / 2));
@@ -343,9 +363,19 @@ function spanBar(shot, index, rnd, onDragText) {
     alive.style.width = `${percent(life.until_tick) - percent(life.from_tick)}%`;
     alive.title = `${playerName(shot.pov_player)} is alive here`;
     track.append(alive);
+    if (life.until_tick < rnd.end_tick) {
+      const limit = latestShotEnd(rnd, life);
+      const zone = el("div", "span-after-zone");
+      zone.style.left = `${percent(life.until_tick)}%`;
+      zone.style.width = `${percent(limit) - percent(life.until_tick)}%`;
+      zone.title = `A shot can stay on ${playerName(shot.pov_player)} up to ` +
+        `${formatSeconds(state.demo.after_death_seconds)} after they die (until the round ends).`;
+      track.append(zone);
+    }
   }
   const selection = el("div", "span-selection");
-  track.append(selection);
+  const afterPart = el("div", "span-selection-after");
+  track.append(selection, afterPart);
 
   for (const k of killsBetween(lo, hi)) {
     const mark = el("div", "span-kill");
@@ -360,6 +390,13 @@ function spanBar(shot, index, rnd, onDragText) {
   const place = () => {
     selection.style.left = `${percent(startTick)}%`;
     selection.style.width = `${percent(endTick) - percent(startTick)}%`;
+    const death = life && life.until_tick < rnd.end_tick ? life.until_tick : null;
+    afterPart.hidden = death === null || endTick <= death;
+    if (!afterPart.hidden) {
+      const from = Math.max(startTick, death);
+      afterPart.style.left = `${percent(from)}%`;
+      afterPart.style.width = `${percent(endTick) - percent(from)}%`;
+    }
     handles.start.style.left = `${percent(startTick)}%`;
     handles.end.style.left = `${percent(endTick)}%`;
   };
@@ -422,8 +459,8 @@ function spanBar(shot, index, rnd, onDragText) {
 }
 
 function povSelect(shot, index) {
-  const ids = new Set(playersAliveDuring(shot.start_tick, shot.end_tick));
-  ids.add(shot.pov_player); // a hand-edited file may name someone who is not alive
+  const ids = new Set(playersForSpan(shot.start_tick, shot.end_tick));
+  ids.add(shot.pov_player); // a hand-edited file may name someone who is not allowed
   const select = el("select");
   select.setAttribute("aria-label", `Whose view shot ${index + 1} shows`);
   for (const id of sortedByName(ids)) {
@@ -506,9 +543,13 @@ function shotCard(shot, index) {
   grip.setAttribute("aria-hidden", "true");
   const length = el("span", "shot-length", lengthText(shot.start_tick, shot.end_tick, shot.speed, rate));
   const span = el("div", "muted small", spanText(shot.start_tick, shot.end_tick, rnd, rate));
+  const after = el("div", "after-death-note small", afterDeathText(shot, shot.end_tick, rnd));
+  after.hidden = after.textContent === "";
   const onDragText = (startTick, endTick) => {
     span.textContent = spanText(startTick, endTick, rnd, rate);
     length.textContent = lengthText(startTick, endTick, shot.speed, rate);
+    after.textContent = afterDeathText(shot, endTick, rnd);
+    after.hidden = after.textContent === "";
   };
 
   const kills = killsBetween(shot.start_tick, shot.end_tick);
@@ -520,6 +561,7 @@ function shotCard(shot, index) {
       length,
       clipMark(index)),
     span,
+    after,
     rnd ? spanBar(shot, index, rnd, onDragText) : null,
     el("div", "shot-controls",
       el("span", "control", "Start", ...nudgeButtons(index, "start")),
@@ -624,9 +666,9 @@ function refreshAddPlayers() {
   const span = addSpan();
   const previous = select.value;
   select.replaceChildren();
-  const ids = span && span.inside ? playersAliveDuring(span.startTick, span.endTick, span.rnd) : [];
+  const ids = span && span.inside ? playersForSpan(span.startTick, span.endTick, span.rnd) : [];
   if (ids.length === 0) {
-    const option = el("option", null, "nobody alive for the whole span");
+    const option = el("option", null, "nobody can show this span");
     option.value = "";
     select.append(option);
     return;
@@ -670,7 +712,8 @@ function initAddForm() {
     }
     const player = $("add-player").value;
     if (!player) {
-      showMessage("Not added: nobody is alive for the whole of that span.", true);
+      showMessage("Not added: nobody can show that span. The player has to be alive at its start " +
+        `and can be dead for at most ${formatSeconds(state.demo.after_death_seconds)} at its end.`, true);
       return;
     }
     const speedText = $("add-speed").value.trim();

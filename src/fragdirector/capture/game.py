@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Mapping, Protocol
 
 from fragdirector.capture.plan import (
     DEMO_LOADED,
@@ -55,6 +55,7 @@ class GameGone(CaptureError):
 class ConsoleLike(Protocol):
     def send(self, command: str) -> None: ...
     def mark(self) -> int: ...
+    def lines_from(self, start: int) -> list[tuple[float, str]]: ...
     def wait_for(self, pattern: str, timeout: float, start: int) -> tuple[float, re.Match]: ...
     def sleep(self, seconds: float) -> None: ...
     def ask(self, command: str, pattern: str, timeout: float = 10.0) -> re.Match: ...
@@ -101,6 +102,10 @@ class Console:
 
     def mark(self) -> int:
         return len(self.lines)
+
+    def lines_from(self, start: int) -> list[tuple[float, str]]:
+        """The lines (arrival time, text) received since ``mark()`` returned ``start``."""
+        return self.lines[start:]
 
     def wait_for(self, pattern: str, timeout: float, start: int) -> tuple[float, re.Match]:
         """Return (arrival time, match) of the first line from ``start`` on that matches."""
@@ -180,10 +185,16 @@ class GameSession:
         self.loaded_demo = path
         self.paused_at = None  # a freshly loaded demo plays
 
-    def change_settings(self) -> None:
-        """Apply ``SAVED_SETTINGS``, remembering the old values (trap 6)."""
-        for name, value in SAVED_SETTINGS.items():
+    def change_settings(self, settings: Mapping[str, str] = SAVED_SETTINGS) -> None:
+        """Apply saved game settings, remembering the old values (trap 6).
+
+        Called again after every demo load. A setting changed before keeps
+        the old value read the first time, but is sent again: loading a demo
+        replaces replicated settings such as ``spec_freeze_time`` with the
+        demo's own value (T21)."""
+        for name, value in settings.items():
             if name in self.saved:
+                self.console.send(f"{name} {value}")
                 continue
             try:
                 old = self.console.ask(name, setting_value_pattern(name)).group(1)
@@ -194,6 +205,8 @@ class GameSession:
                 continue
             self.saved[name] = old
             self.console.send(f"{name} {value}")
+            if old != value:
+                self.log(f"{name}: {old} -> {value} for the capture (put back afterwards)")
 
     def restore_settings(self) -> None:
         for name, old in self.saved.items():
@@ -353,8 +366,8 @@ class Tools:
         )
         return list(NVENC if probe.returncode == 0 else X264_FAST)
 
-    def probe(self, path: Path, entries: str, count_frames: bool = False) -> dict[str, str]:
-        command = [self.ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", entries,
+    def probe(self, path: Path, entries: str, count_frames: bool = False, stream: str = "v:0") -> dict[str, str]:
+        command = [self.ffprobe, "-v", "error", "-select_streams", stream, "-show_entries", entries,
                    "-of", "default=nw=1"]
         if count_frames:
             command.insert(1, "-count_frames")

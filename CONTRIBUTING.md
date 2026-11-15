@@ -25,7 +25,8 @@ interface, so one can be replaced without touching the others:
 - `models.py` and `edits.py` define the shot list. Every edit goes through
   `edits.py`, so the shot list stays valid.
 - `server.py` and `web/` are the local editor. `capture/` and `render.py`
-  run the game and FFmpeg.
+  run the game and FFmpeg. `capture/sound.py` records the game's sound
+  (Windows only, standard library only).
 
 The shot list is the one thing passed between stages. See
 [docs/shotlist.md](docs/shotlist.md).
@@ -50,6 +51,9 @@ The shot list is the one thing passed between stages. See
   the command line).
 - **Capture starts CS2** and talks to it over a local console port with a
   per-run password. Do not weaken either without discussing it first.
+- **Game settings changed by a capture** must be put back afterwards. The
+  list is in `capture/plan.py` (`SAVED_SETTINGS`, `SOUND_SETTINGS`,
+  `AFTER_DEATH_SETTINGS`); add a new setting there, not in the code that uses it.
 - **FFmpeg** is run with paths that come from the shot list, not from free
   text. Keep it that way.
 - **Game and format changes:** CS2 updates can break the demo parser and the

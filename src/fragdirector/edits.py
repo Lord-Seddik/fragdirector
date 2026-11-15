@@ -3,9 +3,10 @@
 Every function takes a ``ShotList`` and returns a new one; the one passed in
 is never changed, so keeping the old value is all undo needs.
 
-An edit that would leave a shot invalid (outside its round, POV player not
-alive, start not before end) is refused with an ``EditError`` whose message
-can be shown to the user. Only the shot being edited is checked, so a list
+An edit that would leave a shot invalid (outside its round, starting when
+its POV player is not alive, running on too long after their death, start
+not before end) is refused with an ``EditError`` whose message can be shown
+to the user. The rule itself is ``shot_problems`` in ``models.py``. Only the shot being edited is checked, so a list
 that already has a problem elsewhere can still be worked on.
 
 Positions are 0-based. Ticks are demo ticks.
@@ -131,7 +132,12 @@ def trim_by(
 
 
 def change_pov(shotlist: ShotList, demo: Demo, index: int, pov_player: str) -> ShotList:
-    """Show the same span through another player, who must be alive for all of it."""
+    """Show the same span through another player.
+
+    They must be alive when the shot starts; they may die during it if the
+    shot ends within the time allowed after a death
+    (``Demo.allowed_players`` lists who qualifies).
+    """
     return _change(shotlist, demo, index, pov_player=pov_player)
 
 

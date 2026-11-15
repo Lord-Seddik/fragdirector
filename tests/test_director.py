@@ -228,15 +228,12 @@ def test_moment_without_kills_shows_its_player():
 # -- victims -------------------------------------------------------------
 
 
-def test_each_victims_view_ends_on_their_death_tick():
+def test_each_victims_view_runs_1_5_seconds_past_their_death_tick():
     demo, moment = spread_ace()
     shots = moment_shots(moment, demo, load_preset("victims"))
-    assert spans(shots) == [(k.tick - 5 * 64, k.tick, k.victim) for k in moment.kills]
+    assert spans(shots) == [(k.tick - 5 * 64, k.tick + 96, k.victim) for k in moment.kills]
     assert [s.label for s in shots] == [f"{t}'s view" for t in T]
     assert shotlist_problems(ShotList(tuple(shots)), demo) == []
-    # One tick later would already be refused by the validity rule.
-    late = replace(shots[0], end_tick=shots[0].end_tick + 1)
-    assert shotlist_problems(ShotList((late,)), demo) != []
 
 
 def test_victims_view_is_clamped_to_the_round_and_to_their_life():
@@ -244,11 +241,11 @@ def test_victims_view_is_clamped_to_the_round_and_to_their_life():
     # The round started 3 s before the death.
     demo = make_demo([kill(START + 192, "c1", "t1"), kill(START + 200, "c1", "t2")])
     shots = moment_shots(detect_multikills(demo)[0], demo, preset)
-    assert spans(shots) == [(START, START + 192, "t1"), (START, START + 200, "t2")]
+    assert spans(shots) == [(START, START + 192 + 96, "t1"), (START, START + 200 + 96, "t2")]
     # t1 was only alive for the last 2.5 s (160 ticks) before dying.
     demo = make_demo([kill(4000, "c1", "t1"), kill(4100, "c1", "t2")], born={"t1": 3840})
     shots = moment_shots(detect_multikills(demo)[0], demo, preset)
-    assert spans(shots)[0] == (3840, 4000, "t1")
+    assert spans(shots)[0] == (3840, 4000 + 96, "t1")
 
 
 def test_victim_alive_for_less_than_the_minimum_shot_is_left_out_with_a_note():
@@ -262,7 +259,40 @@ def test_victim_alive_for_less_than_the_minimum_shot_is_left_out_with_a_note():
 def test_victims_preset_works_for_a_death_moment():
     demo = make_demo([kill(4000, "t1", "c1")])
     [shot] = moment_shots(detect_deaths(demo, "c1")[0], demo, load_preset("victims"))
-    assert (shot.start_tick, shot.end_tick, shot.pov_player) == (3680, 4000, "c1")
+    assert (shot.start_tick, shot.end_tick, shot.pov_player) == (3680, 4000 + 96, "c1")
+
+
+def test_after_death_seconds_sets_how_long_a_victims_view_runs_on(tmp_path):
+    demo, moment = spread_ace()
+    base = load_preset("victims")
+    assert base.victims_after_death_seconds == 1.5
+    for seconds, ticks in ((0, 0), (0.5, 32), (3, 192), (5, 320)):
+        preset = replace(base, victims_after_death_seconds=seconds)
+        shots = moment_shots(moment, demo, preset)
+        assert spans(shots) == [(k.tick - 5 * 64, k.tick + ticks, k.victim) for k in moment.kills]
+        assert shotlist_problems(ShotList(tuple(shots)), demo) == []
+    # Set in a preset file; more than the 5 s the model allows is refused.
+    assert load_preset(write(tmp_path, "[victims]\nafter_death_seconds = 0\n")).victims_after_death_seconds == 0
+    with pytest.raises(PresetError, match="at most 5"):
+        load_preset(write(tmp_path, "[victims]\nafter_death_seconds = 5.5\n"))
+    with pytest.raises(PresetError, match="must be 0 or more"):
+        load_preset(write(tmp_path, "[victims]\nafter_death_seconds = -1\n"))
+
+
+def test_victims_view_after_death_is_cut_at_the_end_of_the_round():
+    # The death is 0.5 s (32 ticks) before the round ends.
+    demo = make_demo([kill(END - 32, "c1", "t1"), kill(END - 200, "c1", "t2")])
+    shots = moment_shots(detect_multikills(demo)[0], demo, load_preset("victims"))
+    assert spans(shots) == [(END - 200 - 320, END - 200 + 96, "t2"), (END - 32 - 320, END, "t1")]
+    assert shotlist_problems(ShotList(tuple(shots)), demo) == []
+
+
+def test_victim_shots_with_after_death_time_never_overlap_wrongly():
+    # c2 kills c1, then c1's own kill of t1 comes earlier: c1's killer view and
+    # victim view are the same view and are merged, not repeated.
+    demo = make_demo([kill(4000, "c1", "t1"), kill(4100, "t2", "c1"), kill(4150, "c2", "t2")])
+    plan = direct(detect_basic(demo), demo, load_preset("major-replay"))
+    check(plan, demo)
 
 
 # -- major-replay --------------------------------------------------------
@@ -278,7 +308,7 @@ def test_major_replay_is_killer_then_victims_then_slow_motion_last_kill():
     assert (replay.start_tick, replay.end_tick, replay.label) == (6768 - 96, 6768 + 32, "replay 0.5x")
     # 2 s of demo at half speed are 4 s of video.
     assert replay.duration_seconds(64) == 4.0
-    assert plan.shotlist.duration_seconds() == 3 + 18 + 5 * 4 + 4
+    assert plan.shotlist.duration_seconds() == 3 + 18 + 5 * (4 + 1.5) + 4
     assert plan.notes == () and plan.budget_seconds is None
     check(plan, demo)
 
@@ -373,7 +403,9 @@ def test_budget_never_cuts_a_kill_out_of_a_kept_shot():
             if s.label.startswith("c1 5k (2/2)"):
                 assert s.start_tick <= 6000 - 64 and s.end_tick >= 6768 + 32
             if s.label.endswith("view"):
-                assert s.end_tick in [k.tick for k in moment.kills]
+                # The death stays in the shot, with at most the drafted time after it.
+                death = next(k.tick for k in moment.kills if f"{k.victim}'s view" == s.label)
+                assert death <= s.end_tick <= death + 96
             assert s.duration_seconds(64) >= 2.0 - 1e-9
 
 

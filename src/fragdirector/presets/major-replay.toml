@@ -20,6 +20,7 @@ post_roll_max_seconds = 2.0
 
 [victims]
 seconds = 4.0
+after_death_seconds = 1.5
 
 [replay]
 speed = 0.5

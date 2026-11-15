@@ -11,7 +11,8 @@ the checks that belong to the transport (see "Safety" below).
 
 API (all JSON; a refused request answers 4xx with ``{"error": "..."}``)::
 
-    GET  /api/demo                  demo info: players, rounds, presets, save file
+    GET  /api/demo                  demo info: players, rounds, presets, save file,
+                                    how long a shot may follow a player after death
     GET  /api/moments               scored moments, best first; "id" is the
                                     position in this list for the whole run
     GET  /api/shotlist              the current shot list
@@ -34,7 +35,7 @@ API (all JSON; a refused request answers 4xx with ``{"error": "..."}``)::
     POST /api/capture               {index}  capture that shot now (starts CS2;
                                     runs in the background, one at a time)
     GET  /api/render                render state, its log, and the video file
-    POST /api/render                {crossfade?, labels?}  make the video from the
+    POST /api/render                {crossfade?, labels?, sound?}  make the video from the
                                     clips (needs every shot's clip; runs in the
                                     background, one at a time)
 
@@ -77,10 +78,11 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from fragdirector import edits
-from fragdirector.capture import CaptureError, Job, JobResult, clip_path, plan_jobs
+from fragdirector.capture import CaptureError, Job, JobResult, plan_jobs
 from fragdirector.detect.basic import detect_basic
 from fragdirector.director import direct, load_preset, moment_title, preset_names, wrong_overlaps
 from fragdirector.models import (
+    AFTER_DEATH_SECONDS,
     Demo,
     ModelError,
     Moment,
@@ -93,6 +95,7 @@ from fragdirector.render import (
     RenderError,
     RenderOptions,
     RenderResult,
+    find_clip,
     missing_clips,
     missing_clips_message,
     render_video,
@@ -302,6 +305,10 @@ class EditorApp:
             "path": demo.path,
             "map_name": demo.map_name,
             "tick_rate": demo.tick_rate,
+            # How long a shot may stay on a player after their death; the page
+            # uses it to colour that part of a shot and to list the right players.
+            "after_death_seconds": AFTER_DEATH_SECONDS,
+            "after_death_ticks": demo.after_death_ticks,
             "players": [player.to_dict() for player in demo.players],
             "rounds": [rnd.to_dict() for rnd in demo.rounds],
             "presets": preset_names(),
@@ -491,7 +498,7 @@ class EditorApp:
 
     def _get_capture(self, _body: Any) -> dict:
         captured = (
-            [clip_path(shot, self.clips_dir).is_file() for shot in self.shotlist.shots]
+            [find_clip(shot, self.clips_dir).is_file() for shot in self.shotlist.shots]
             if self.clips_dir is not None else []
         )
         return {
@@ -562,13 +569,16 @@ class EditorApp:
         }
 
     def _start_render(self, body: Any) -> dict:
-        body = _body(body, ("crossfade", "labels"))
+        body = _body(body, ("crossfade", "labels", "sound"))
         crossfade = _number(body, "crossfade", required=False) or 0.0
         labels = body.get("labels", False)
         if not isinstance(labels, bool):
             raise ApiError(400, f"Field 'labels' must be true or false, got {labels!r}.")
+        sound = body.get("sound", True)
+        if not isinstance(sound, bool):
+            raise ApiError(400, f"Field 'sound' must be true or false, got {sound!r}.")
         try:
-            options = RenderOptions(crossfade_seconds=crossfade, labels=labels)
+            options = RenderOptions(crossfade_seconds=crossfade, labels=labels, sound=sound)
         except RenderError as error:
             raise ApiError(400, str(error)) from error
         video = self.video_path()

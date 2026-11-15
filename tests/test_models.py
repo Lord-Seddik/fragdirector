@@ -5,6 +5,7 @@ import pytest
 
 from conftest import DEMO_PATH, P1, P2, P3, P4
 from fragdirector.models import (
+    AFTER_DEATH_SECONDS,
     Demo,
     Kill,
     Life,
@@ -206,13 +207,48 @@ def test_alive_lookups(demo):
     assert demo.is_alive(P3, 2999)
     assert not demo.is_alive(P3, 3000)  # the death tick itself is not alive
     assert demo.is_alive(P3, 5000)  # back next round
-    assert demo.allowed_span(P3, 2000) == (1000, 3000)
-    assert demo.allowed_span(P3, 3500) is None
-    assert demo.allowed_span("nobody", 2000) is None
+    assert demo.alive_span(P3, 2000) == (1000, 3000)
+    assert demo.alive_span(P3, 3000) is None
+    assert demo.alive_span(P3, 3500) is None
+    assert demo.alive_span("nobody", 2000) is None
     assert demo.players_alive_during(2000, 3000) == (P1, P2, P3, P4)
     assert demo.players_alive_during(2000, 3001) == (P1, P2, P4)
     assert demo.players_alive_during(7600, 8000) == (P2, P4)
     assert demo.players_alive_during(100, 200) == ()
+
+
+def test_what_a_shot_may_do(demo):
+    # p3 dies at 3000; a shot may stay on them for 5 s (320 ticks) more.
+    assert AFTER_DEATH_SECONDS == 5.0
+    assert demo.after_death_ticks == 320
+    assert replace(demo, tick_rate=128).after_death_ticks == 640
+    assert demo.allowed_span(P3, 2000) == (1000, 3320)
+    assert demo.allowed_span(P3, 3000) == (1000, 3320)  # the death can be shown
+    assert demo.allowed_span(P3, 3319) == (1000, 3320)
+    assert demo.allowed_span(P3, 3320) is None
+    assert demo.allowed_span(P1, 2000) == (1000, 5000)  # a survivor: the round
+    assert demo.allowed_span(P2, 8300) == (5000, 8320)  # dead since 8000
+    assert demo.allowed_span(P2, 8500) is None
+    assert demo.allowed_span("nobody", 2000) is None
+    assert demo.allowed_span(P1, 999) is None
+    assert demo.allowed_players(2000, 3000) == (P1, P2, P3, P4)
+    assert demo.allowed_players(2000, 3320) == (P1, P2, P3, P4)
+    assert demo.allowed_players(2000, 3321) == (P1, P2, P4)
+    assert demo.allowed_players(3000, 3100) == (P1, P2, P4)  # p3 is dead at the start
+    assert demo.allowed_players(7600, 8000) == (P2, P4)
+    assert demo.allowed_players(100, 200) == ()
+    rnd = demo.rounds[0]
+    assert demo.latest_shot_end(rnd, rnd.life_of(P1)) == 5000
+    assert demo.latest_shot_end(rnd, rnd.life_of(P3)) == 3320
+
+
+def test_a_player_who_was_never_alive_cannot_be_followed(demo):
+    lives = (Life(P1, "CT", 1000, 5000), Life(P3, "T", 2000, 2000))
+    demo = replace(demo, rounds=(replace(demo.rounds[0], lives=lives), demo.rounds[1]),
+                   kills=(), bomb_events=())
+    assert demo.allowed_span(P3, 2000) is None
+    assert demo.allowed_players(2000, 2100) == (P1,)
+    assert shot_problems(shot(2000, 2100, P3), demo) != []
 
 
 # -- shots against a demo ---------------------------------------------------
@@ -225,6 +261,102 @@ def test_valid_shots_have_no_problems(demo):
     assert shotlist_problems(ShotList(shots=(shot(), shot(2000, 3000, P3))), demo) == []
 
 
+def test_a_shot_may_run_on_after_its_players_death(demo):
+    assert shot_problems(shot(2000, 3001, P3), demo) == []
+    assert shot_problems(shot(2000, 3320, P3), demo) == []  # death + 5 s exactly
+    assert shot_problems(shot(2999, 3320, P3), demo) == []  # alive for its first tick only
+    assert shot_problems(shot(1000, 3320, P3), demo) == []  # the widest there is
+
+    (problem,) = shot_problems(shot(2000, 3321, P3), demo)  # one tick more
+    assert problem == ("donk dies at tick 3000. A shot can stay on them for 5 s after that, "
+                       "to tick 3320; this one ends at tick 3321.")
+
+
+def test_a_shot_must_start_while_its_player_is_alive(demo):
+    (problem,) = shot_problems(shot(3000, 3100, P3), demo)  # starts on the death tick
+    assert problem == ("donk is no longer alive from tick 3000; the shot starts at tick 3000. "
+                       "A shot has to start while its player is alive.")
+    # Too late at both ends: only the start is reported.
+    (problem,) = shot_problems(shot(3500, 3800, P3), demo)
+    assert "the shot starts at tick 3500" in problem
+
+
+def test_time_after_death_stops_at_the_end_of_the_round(demo):
+    # p4 now dies 200 ticks before round 1 is over (tick 5000).
+    lives = tuple(replace(life, until_tick=4800) if life.player == P4 else life
+                  for life in demo.rounds[0].lives)
+    demo = replace(demo, rounds=(replace(demo.rounds[0], lives=lives), demo.rounds[1]),
+                   kills=(), bomb_events=())
+    assert demo.allowed_span(P4, 4000) == (1000, 5000)
+    assert shot_problems(shot(4700, 5000, P4), demo) == []
+    (problem,) = shot_problems(shot(4700, 5001, P4), demo)
+    assert "after round 1 is over" in problem
+
+
+def test_the_time_after_death_follows_the_tick_rate(demo):
+    demo = replace(demo, tick_rate=128)  # 5 s is now 640 ticks
+    assert shot_problems(shot(2000, 3640, P3), demo) == []
+    (problem,) = shot_problems(shot(2000, 3641, P3), demo)
+    assert "to tick 3640" in problem
+
+
+TICKS = sorted(set(range(900, 9200, 100)) | {
+    2999, 3001, 3319, 3320, 3321, 3999, 4319, 4320, 4321, 4999, 5001,
+    6999, 7001, 7319, 7320, 7321, 7499, 7820, 7821, 7999, 8320, 8321, 8999,
+})
+SPANS = [(start, end) for start in TICKS for end in TICKS if start < end]
+
+
+def test_shots_valid_under_the_old_rule_are_still_valid(demo):
+    """Before after-death shots, the POV player had to be alive throughout."""
+    old = 0
+    for start, end in SPANS:
+        rnd = demo.round_at(start)
+        if rnd is None or end > rnd.end_tick:
+            continue
+        for life in rnd.lives:
+            if life.covers(start, end):
+                old += 1
+                assert shot_problems(shot(start, end, life.player), demo) == []
+    assert old > 1000
+
+
+def test_the_helpers_agree_with_the_check(demo):
+    players = (P1, P2, P3, P4)
+    for start, end in SPANS:
+        valid = tuple(p for p in players if not shot_problems(shot(start, end, p), demo))
+        assert demo.allowed_players(start, end) == valid, (start, end)
+    for player in players:
+        for tick in TICKS:
+            span = demo.allowed_span(player, tick)
+            if span is None:
+                continue
+            assert span[0] <= tick < span[1]
+            assert shot_problems(shot(*span, player), demo) == []
+            assert shot_problems(shot(span[0], span[1] + 1, player), demo) != []
+            if span[0] > 0:
+                assert shot_problems(shot(span[0] - 1, span[1], player), demo) != []
+
+
+def test_old_shot_list_files_still_load_and_stay_valid(demo, tmp_path):
+    """A file written before after-death shots: same format, same version."""
+    path = tmp_path / "shots.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "tick_rate": 64,
+        "shots": [
+            {"demo": DEMO_PATH, "start_tick": 2000, "end_tick": 3200,
+             "pov_player": P1, "speed": 1.0, "label": "killer"},
+            {"demo": DEMO_PATH, "start_tick": 2680, "end_tick": 3000,
+             "pov_player": P3, "speed": 0.5, "label": "donk's view"},
+        ],
+    }), encoding="utf-8")
+    shots = ShotList.load(path)
+    assert shotlist_problems(shots, demo) == []
+    shots.save(path)
+    assert json.loads(path.read_text(encoding="utf-8"))["version"] == 1
+
+
 def test_demo_path_may_be_written_differently(demo):
     other = replace(shot(), demo=r"C:\Users\me\Demos\MATCH.dem")
     assert shot_problems(other, demo) == []
@@ -235,7 +367,7 @@ def test_demo_path_may_be_written_differently(demo):
     (shot(9000, 9500), "not inside any round"),
     (shot(4500, 5001), "after round 1 is over"),
     (shot(4000, 6000), "after round 1 is over"),
-    (shot(2000, 3001, P3), "donk is no longer alive from tick 3000"),
+    (shot(2000, 3321, P3), "donk dies at tick 3000"),
     (shot(3500, 3800, P3), "donk is no longer alive from tick 3000"),
     (shot(pov="nobody"), "not in this demo"),
     (replace(shot(), demo="demos/other.dem"), "not 'demos/match.dem'"),
@@ -253,7 +385,7 @@ def test_late_spawn_and_absent_player(demo):
 
 
 def test_shotlist_problems_name_the_shot(demo):
-    shots = ShotList(shots=(shot(), shot(2000, 3001, P3)), tick_rate=128)
+    shots = ShotList(shots=(shot(), shot(2000, 3321, P3)), tick_rate=128)
     problems = shotlist_problems(shots, demo)
     assert len(problems) == 2
     assert "128 ticks per second" in problems[0]

@@ -37,6 +37,10 @@ DEFAULT_TICK_RATE = 64
 # outside anything useful and keep every length a finite number.
 MAX_TICK = 2**31 - 1  # the game counts ticks in 32 bits
 MIN_SPEED, MAX_SPEED = 0.01, 100.0
+# How long a shot may stay on its player after they die. Measured in spike
+# T21 (docs/capture.md, "After death"): with the capture's settings CS2 keeps
+# the camera on the body for 11 s, so 5 s leaves a wide margin.
+AFTER_DEATH_SECONDS = 5.0
 SIDES = ("CT", "T")
 BOMB_EVENT_KINDS = ("planted", "defused", "exploded")
 
@@ -445,12 +449,14 @@ class Demo:
                 return rnd
         return None
 
-    def is_alive(self, player_id: str, tick: int) -> bool:
-        return self.allowed_span(player_id, tick) is not None
+    # Who is alive when. The death tick itself is not alive.
 
-    def allowed_span(self, player_id: str, tick: int) -> tuple[int, int] | None:
-        """The widest ``(start_tick, end_tick)`` a shot of this player can
-        have around ``tick``, or ``None`` if they are not alive then."""
+    def is_alive(self, player_id: str, tick: int) -> bool:
+        return self.alive_span(player_id, tick) is not None
+
+    def alive_span(self, player_id: str, tick: int) -> tuple[int, int] | None:
+        """``(from_tick, until_tick)`` of the life this player is living at
+        ``tick``, or ``None`` if they are not alive then."""
         rnd = self.round_at(tick)
         life = rnd.life_of(player_id) if rnd is not None else None
         if life is None or not life.from_tick <= tick < life.until_tick:
@@ -458,11 +464,56 @@ class Demo:
         return (life.from_tick, life.until_tick)
 
     def players_alive_during(self, start_tick: int, end_tick: int) -> tuple[str, ...]:
-        """Ids of the players a shot over this span could follow."""
+        """Ids of the players who are alive for the whole span."""
         rnd = self.round_at(start_tick)
         if rnd is None:
             return ()
         return tuple(life.player for life in rnd.lives if life.covers(start_tick, end_tick))
+
+    # What a shot may do. A shot starts while its player is alive and may run
+    # on after their death for ``after_death_ticks``, never past the round.
+    # ``shot_problems`` checks the same rule and says what is wrong.
+
+    @property
+    def after_death_ticks(self) -> int:
+        """``AFTER_DEATH_SECONDS`` in this demo's ticks."""
+        return seconds_to_ticks(AFTER_DEATH_SECONDS, self.tick_rate)
+
+    def latest_shot_end(self, rnd: Round, life: Life) -> int:
+        """The latest ``end_tick`` of a shot that follows ``life``: the round's
+        end for a survivor, else the death tick plus the time allowed after
+        death, cut at the round's end."""
+        if life.until_tick >= rnd.end_tick:
+            return rnd.end_tick
+        return min(life.until_tick + self.after_death_ticks, rnd.end_tick)
+
+    def allowed_span(self, player_id: str, tick: int) -> tuple[int, int] | None:
+        """The widest ``(start_tick, end_tick)`` a shot of this player can
+        have around ``tick``, or ``None`` if no shot of theirs can show it.
+
+        The end may lie after the player's death; the shot itself must start
+        before that death (``alive_span`` gives the death tick).
+        """
+        rnd = self.round_at(tick)
+        life = rnd.life_of(player_id) if rnd is not None else None
+        if life is None or life.from_tick == life.until_tick:
+            return None
+        latest = self.latest_shot_end(rnd, life)
+        if not life.from_tick <= tick < latest:
+            return None
+        return (life.from_tick, latest)
+
+    def allowed_players(self, start_tick: int, end_tick: int) -> tuple[str, ...]:
+        """Ids of the players a shot over this span could follow: alive at its
+        start, and not dead for too long at its end."""
+        rnd = self.round_at(start_tick)
+        if rnd is None:
+            return ()
+        return tuple(
+            life.player for life in rnd.lives
+            if life.from_tick <= start_tick < life.until_tick
+            and end_tick <= self.latest_shot_end(rnd, life)
+        )
 
     def seconds(self, ticks: int) -> float:
         return ticks / self.tick_rate
@@ -553,7 +604,7 @@ class Shot:
     """One piece of the final video: a span of a demo seen through one player.
 
     Only what can be checked without the demo is checked here. Whether the
-    shot fits its round and its player is alive is ``shot_problems``' job.
+    shot fits its round and its player's life is ``shot_problems``' job.
     """
 
     demo: str
@@ -649,8 +700,9 @@ class ShotList:
 def shot_problems(shot: Shot, demo: Demo) -> list[str]:
     """Reasons this shot cannot be captured from this demo; empty if it can.
 
-    A valid shot lies inside one round and its POV player is alive for all of
-    it. The messages are written to be shown to the user.
+    A valid shot lies inside one round, starts while its POV player is alive
+    and ends no later than ``AFTER_DEATH_SECONDS`` after that player's death.
+    The messages are written to be shown to the user.
     """
     if demo_file_name(shot.demo) != demo_file_name(demo.path):
         return [f"The shot is for demo '{shot.demo}', not '{demo.path}'."]
@@ -682,10 +734,22 @@ def shot_problems(shot: Shot, demo: Demo) -> list[str]:
             f"{name} is not alive before tick {life.from_tick}; "
             f"the shot starts at tick {shot.start_tick}."
         )
-    if shot.end_tick > life.until_tick and life.until_tick < rnd.end_tick:
+    if life.until_tick >= rnd.end_tick:  # they live to the end of the round
+        return problems
+    if shot.start_tick >= life.until_tick:
         problems.append(
             f"{name} is no longer alive from tick {life.until_tick}; "
-            f"the shot ends at tick {shot.end_tick}."
+            f"the shot starts at tick {shot.start_tick}. "
+            f"A shot has to start while its player is alive."
+        )
+        return problems
+    # A limit at or past the round's end is the round's end, reported above.
+    limit = life.until_tick + demo.after_death_ticks
+    if shot.end_tick > limit and limit < rnd.end_tick:
+        problems.append(
+            f"{name} dies at tick {life.until_tick}. A shot can stay on them for "
+            f"{AFTER_DEATH_SECONDS:g} s after that, to tick {limit}; "
+            f"this one ends at tick {shot.end_tick}."
         )
     return problems
 

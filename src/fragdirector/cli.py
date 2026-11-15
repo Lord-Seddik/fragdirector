@@ -101,9 +101,10 @@ def build_parser() -> argparse.ArgumentParser:
         "capture",
         help="record one clip per shot from CS2 (Windows; starts the game)",
         description="Start CS2, record every shot of a shot list from the game window and "
-        "write one .mp4 per shot (picture only). Clips that already exist are skipped, "
-        "so an interrupted capture can simply be run again. Needs Steam running, CS2 "
-        "closed and FFmpeg 8.0 or newer on PATH.",
+        "write one .mp4 per shot with the game's sound (only CS2's own sound, not other "
+        "programs'). Clips that already exist are skipped, so an interrupted capture can "
+        "simply be run again. Needs Steam running, CS2 closed, FFmpeg 8.0 or newer on PATH, "
+        "and for the sound Windows 10 2004 or newer.",
     )
     capture.add_argument("shots", help="shot list file (from 'plan' or the editor)")
     capture.add_argument(
@@ -122,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="print what would be captured, without starting the game"
     )
     capture.add_argument("--fps", type=int, default=60, help="frames per second (default 60)")
+    capture.add_argument(
+        "--no-sound",
+        action="store_true",
+        help="record the picture only (clips get the names silent clips had before sound was added)",
+    )
     capture.add_argument("--steam", metavar="PATH", help="path to steam.exe (default: from the registry)")
     capture.add_argument(
         "--port", type=int, metavar="N", help="local port for the CS2 console (default: a free one)"
@@ -135,7 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="put the captured clips together into one video (needs FFmpeg)",
         description="Join the clips 'fragdirector capture' made into one .mp4: each shot is cut to "
         "its length, slow motion is applied, and shots are joined with a hard cut or a crossfade. "
-        "The video has no sound. Every shot needs its clip; capture the missing ones first.",
+        "The clips' sound is carried along (silence for a clip without), unless --no-sound. "
+        "Every shot needs its clip; capture the missing ones first.",
     )
     render.add_argument("shots", help="shot list file (from 'plan' or the editor)")
     render.add_argument(
@@ -158,6 +165,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render.add_argument(
         "--labels", action="store_true", help="write each shot's label on the picture for its first seconds"
+    )
+    render.add_argument(
+        "--no-sound", action="store_true", help="write a video with no sound track (default: with the clips' sound)"
     )
     render.add_argument("--crf", type=int, default=18, help="x264 quality, 0-51, lower is better (default 18)")
     render.add_argument("--force", action="store_true", help="replace the video if it already exists")
@@ -403,7 +413,7 @@ def capture(args: argparse.Namespace) -> int:
     shots_file = Path(args.shots)
     clips = Path(args.clips) if args.clips else shots_file.parent / "clips"
     try:
-        options = CaptureOptions(fps=args.fps, demo_ui=args.demo_ui)
+        options = CaptureOptions(fps=args.fps, demo_ui=args.demo_ui, sound=not args.no_sound)
         only = _shot_numbers(args.only) if args.only else None
         shotlist = ShotList.load(shots_file)
         files = demo_files(shotlist, shots_file, Path(args.demo) if args.demo else None)
@@ -459,7 +469,8 @@ def render(args: argparse.Namespace) -> int:
         print(f"[render] {_printable(message)}", flush=True)
 
     try:
-        options = RenderOptions(crossfade_seconds=args.crossfade, labels=args.labels, crf=args.crf)
+        options = RenderOptions(crossfade_seconds=args.crossfade, labels=args.labels, crf=args.crf,
+                                sound=not args.no_sound)
         shotlist = ShotList.load(shots_file)
         result = render_video(
             shotlist, clips, out, options, log=log, overwrite=args.force, dry_run=args.dry_run

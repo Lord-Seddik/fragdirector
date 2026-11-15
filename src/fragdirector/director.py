@@ -15,9 +15,12 @@ Presets
       not shown. Pre-roll and post-roll grow with the average gap between
       the kills of the shot: a fast spray gets a short lead-in, a slow
       multi-kill a longer one.
-    * victims - each victim's view of the seconds before their death. The
-      shot ends exactly on the death tick: that is the last tick the
-      validity rule allows, and after it the view is a camera on the body.
+    * victims - each victim's view of the seconds before their death, then
+      ``after_death_seconds`` more (default 1.5) on the camera the game puts
+      by the body. The extra time is cut at the limit the validity rule
+      allows (5 s) and at the end of the round; 0 ends the shot on the
+      death tick. The minimum shot length is measured on the part before
+      the death.
     * replay  - the moment's last kill again from the killer's view, slowed
       down.
 
@@ -81,7 +84,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from fragdirector import edits
-from fragdirector.models import Demo, Moment, Shot, ShotList, seconds_to_ticks
+from fragdirector.models import AFTER_DEATH_SECONDS, Demo, Moment, Shot, ShotList, seconds_to_ticks
 
 PRESETS_DIR = Path(__file__).with_name("presets")
 DEFAULT_PRESET = "killer"
@@ -119,6 +122,7 @@ class Preset:
     killer_post_roll_per_gap_second: float
     killer_post_roll_max_seconds: float
     victims_seconds: float
+    victims_after_death_seconds: float
     replay_speed: float
     replay_before_seconds: float
     replay_after_seconds: float
@@ -227,6 +231,12 @@ def load_preset(name_or_path: str | os.PathLike = DEFAULT_PRESET) -> Preset:
 
     if not (values["shots_killer"] or values["shots_victims"] or values["shots_replay"]):
         raise PresetError(f"{path}: [shots] must switch on at least one kind of shot")
+    if values["victims_after_death_seconds"] > AFTER_DEATH_SECONDS:
+        raise PresetError(
+            f"{path}: {_where('victims_after_death_seconds')} must be at most "
+            f"{AFTER_DEATH_SECONDS:g} (the longest a shot may follow a player after their "
+            f"death), got {values['victims_after_death_seconds']!r}"
+        )
     if values["budget_max_stretch"] < 1:
         raise PresetError(
             f"{path}: {_where('budget_max_stretch')} must be 1 or more, "
@@ -245,7 +255,7 @@ def load_preset(name_or_path: str | os.PathLike = DEFAULT_PRESET) -> Preset:
 def _life_around(demo: Demo, player: str, tick: int) -> tuple[int, int] | None:
     """``(from_tick, until_tick)`` of the life ``player`` is in at ``tick``.
 
-    Unlike ``Demo.allowed_span`` the tick of the death itself counts: a shot
+    Unlike ``Demo.alive_span`` the tick of the death itself counts: a shot
     about a death needs the life that ends there.
     """
     rnd = demo.round_at(tick)
@@ -387,6 +397,7 @@ def _victim_drafts(
     moment: Moment, demo: Demo, preset: Preset, score: float, notes: list[str]
 ) -> list[_Draft]:
     before = seconds_to_ticks(preset.victims_seconds, demo.tick_rate)
+    after = seconds_to_ticks(preset.victims_after_death_seconds, demo.tick_rate)
     min_ticks = _min_ticks(demo.tick_rate, preset, 1.0)
     drafts = []
     for kill in moment.kills:
@@ -394,8 +405,14 @@ def _victim_drafts(
         life = _life_around(demo, kill.victim, kill.tick)
         fitted = None
         if life is not None:
-            # End on the death tick: the latest end the validity rule allows.
+            # The minimum length is measured on the time before the death, so a
+            # player who lived only a moment is left out, not shown as a death cam.
             fitted = _fit(kill.tick - before, kill.tick, (life[0], kill.tick), min_ticks)
+        if fitted is not None and after > 0:
+            # Then run on past the death, as far as the validity rule allows.
+            rnd = demo.round_at(kill.tick)
+            latest = demo.latest_shot_end(rnd, rnd.life_of(kill.victim))
+            fitted = (fitted[0], min(kill.tick + after, latest))
         if fitted is None:
             notes.append(
                 f"{name} was not alive long enough before their death at tick {kill.tick} "
@@ -582,7 +599,7 @@ def _bounds(shots: Sequence[Shot], kept: Sequence[int], index: int, demo: Demo) 
     """How far shot ``index`` may reach: its player's life, and half of the
     gap to the nearest kept shot of the same view on either side."""
     shot = shots[index]
-    life = demo.allowed_span(shot.pov_player, shot.start_tick)
+    life = demo.alive_span(shot.pov_player, shot.start_tick)
     if life is None:
         return (shot.start_tick, shot.end_tick)
     low, high = min(life[0], shot.start_tick), max(life[1], shot.end_tick)

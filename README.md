@@ -18,8 +18,9 @@ needs you to record gameplay yourself.
 - **Python 3.12** or newer.
 - **FFmpeg** on your PATH. `fragdirector render` needs it; `fragdirector
   capture` needs **FFmpeg 8.0 or newer**.
-- **For capture only:** Windows, Steam, and CS2 installed. CS2 must be closed
-  when you start a capture; fragdirector starts it for you.
+- **For capture only:** Windows 10 build 19041 (version 2004) or newer,
+  Steam, and CS2 installed. CS2 must be closed when you start a capture;
+  fragdirector starts it for you. The sound needs that Windows build.
 
 Analysis, the editor and rendering of existing clips work on any system with
 Python and FFmpeg. Capture is Windows only.
@@ -52,6 +53,11 @@ fragdirector --help
    fragdirector plan demos/match.dem --preset major-replay --top 5 --out shots.json
    ```
 
+   Victim shots go on for a short time after the death
+   (`after_death_seconds` in the preset's `[victims]` section: 1.5 s by
+   default, at most 5 s), so the fatal moment and what follows are shown from
+   the victim's side. The game keeps the camera on the body during that time.
+
 3. **Edit it in the browser.** This starts a local page; nothing leaves your
    machine.
 
@@ -69,7 +75,10 @@ fragdirector --help
 4. **Record the clips** (Windows, CS2 closed). fragdirector starts CS2, replays
    the demo, and records one clip per shot into `clips/` next to the shot list.
    It runs by itself and can be stopped and started again; finished clips are
-   skipped.
+   skipped. Each clip carries the game's sound. CS2 goes silent when its window
+   is not in front; fragdirector turns that off while it records, so you do
+   not need to keep the game in front. Add `--no-sound` to record the picture
+   only.
 
    ```bash
    fragdirector capture shots.json
@@ -84,8 +93,10 @@ fragdirector --help
    ```
 
    Options: `--crossfade 0.4` for fades between shots, `--labels` to write
-   each shot's label on the picture for its first seconds. The editor's
-   **Make video** button does the same.
+   each shot's label on the picture for its first seconds, and `--no-sound`
+   to leave the sound out. The sound follows the picture through slow motion
+   (slowed down, same pitch) and crossfades; a clip without sound gets
+   silence. The editor's **Make video** button does the same.
 
 Run `fragdirector <command> --help` for every option. Add `--dry-run` to
 `capture` or `render` to see what would happen without starting the game or
@@ -93,7 +104,11 @@ writing a video.
 
 ## Known limits
 
-- **No sound.** Clips and videos are picture only.
+- **Only the game's sound.** Sound is recorded from CS2 alone, so music and
+  other apps are not in the clips. Sound is in step with the picture to about
+  two frames.
+- **Clips captured before sound was added** have no sound track; render adds
+  silence for them. Capture them again to get the game's sound.
 - **Slow motion** repeats frames: at 0.5x the picture changes 30 times a
   second. Higher capture frame rates are untested.
 - **Capture is real time.** Each clip takes about as long as its length plus
@@ -111,7 +126,9 @@ writing a video.
 - **Capture** starts CS2 through Steam with `-insecure` (demo playback only,
   never a VAC-secured game) and with the game's TCP console open. That
   console listens on every network interface while the game runs; a random
-  password made for each run protects it. fragdirector closes the game when
+  password made for each run protects it. While it captures, it changes three
+  game settings (`snd_mute_losefocus`, `volume` and `spec_freeze_time`) and
+  puts back the values it found when it ends. fragdirector closes the game when
   the capture ends and never closes a game it did not start.
 - **FFmpeg** is run to record the game window and to join the clips. It only
   reads the clips folder and writes into it and to the video file.
