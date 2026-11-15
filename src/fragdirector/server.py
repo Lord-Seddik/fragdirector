@@ -50,7 +50,8 @@ Safety (T15 reviews this):
   foreign web page cannot send to us without a CORS preflight
 * the file that is saved and loaded is fixed when the server starts; no
   request can name a path. A preset can only be named, never loaded from a path
-* request bodies are limited to ``MAX_BODY_BYTES``
+* request bodies are limited to ``MAX_BODY_BYTES``; a shot list that is
+  replaced is checked and answered for before it is kept
 * static files come only from the ``web/`` folder, by plain file name
 * a capture starts the game on a shot already in the server's list; the
   demo, the clips folder and every command come from the server, never
@@ -67,6 +68,7 @@ import math
 import re
 import sys
 import threading
+import traceback
 import webbrowser
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -263,7 +265,8 @@ class EditorApp:
                 return 200, self._route(method, path, body)
         except ApiError as error:
             return error.status, {"error": error.message}
-        except Exception:  # a bug; do not leak details to the client
+        except Exception:  # a bug; the details go to the console, not to the client
+            traceback.print_exc()
             return 500, {"error": "Internal error in the editor server."}
 
     def _route(self, method: str, path: str, body: Any) -> dict:
@@ -325,8 +328,8 @@ class EditorApp:
     def _get_moments(self, _body: Any) -> dict:
         return {"moments": [self._moment_json(i, m) for i, m in enumerate(self.moments)]}
 
-    def _shotlist_json(self, extra: dict | None = None) -> dict:
-        shotlist = self.shotlist
+    def _shotlist_json(self, extra: dict | None = None, shotlist: ShotList | None = None) -> dict:
+        shotlist = self.shotlist if shotlist is None else shotlist
         return {
             "shotlist": shotlist.to_dict(),
             "duration_seconds": shotlist.duration_seconds(),
@@ -336,6 +339,13 @@ class EditorApp:
 
     def _get_shotlist(self, _body: Any) -> dict:
         return self._shotlist_json()
+
+    def _replace(self, shotlist: ShotList, extra: dict | None = None) -> dict:
+        """Make ``shotlist`` the current one. The answer is worked out first, so
+        a list that cannot be answered for is never kept."""
+        answer = self._shotlist_json(extra, shotlist)
+        self.shotlist = shotlist
+        return answer
 
     # -- replacing, saving, loading ---------------------------------------
 
@@ -347,8 +357,7 @@ class EditorApp:
             shotlist = ShotList.from_dict(body["shotlist"])
         except ModelError as error:
             raise ApiError(422, str(error)) from error
-        self.shotlist = shotlist
-        return self._shotlist_json()
+        return self._replace(shotlist)
 
     def _save(self, body: Any) -> dict:
         _body(body, ())
@@ -372,8 +381,7 @@ class EditorApp:
             raise ApiError(500, f"Cannot read {self.save_path}: {error.strerror or error}") from error
         except ModelError as error:
             raise ApiError(422, str(error)) from error
-        self.shotlist = shotlist
-        return self._shotlist_json({"loaded": str(self.save_path)})
+        return self._replace(shotlist, {"loaded": str(self.save_path)})
 
     # -- edits -------------------------------------------------------------
 
@@ -382,8 +390,7 @@ class EditorApp:
             shotlist = self._edit_routes[name](body)
         except (edits.EditError, ModelError) as error:
             raise ApiError(422, str(error)) from error
-        self.shotlist = shotlist  # only reached when the edit worked
-        return self._shotlist_json()
+        return self._replace(shotlist)  # only reached when the edit worked
 
     def _trim(self, body: Any) -> ShotList:
         body = _body(body, ("index", "start_tick", "end_tick"))
@@ -473,8 +480,7 @@ class EditorApp:
                 shotlist = plan.shotlist
         except ValueError as error:  # director, preset and edit errors
             raise ApiError(422, str(error)) from error
-        self.shotlist = shotlist
-        return self._shotlist_json({
+        return self._replace(shotlist, {
             "notes": list(plan.notes),
             "budget_met": plan.budget_met,
             "overlaps": wrong_overlaps(plan.shotlist, self.demo),
@@ -505,6 +511,9 @@ class EditorApp:
         with capture.lock:
             if capture.state == "running":
                 raise ApiError(409, f"Shot {capture.shot + 1} is being captured; wait for it to finish.")
+        with self.render.lock:
+            if self.render.state == "running":
+                raise ApiError(409, "The video is being made from the clips; wait for it to finish.")
         demos = {demo_file_name(self.demo.path): (self.demo, Path(self.demo.path))}
         try:
             jobs = plan_jobs(self.shotlist, demos, self.clips_dir, only=[index])
@@ -692,8 +701,8 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         try:
             return json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
-            raise ApiError(400, f"The request body is not valid JSON: {error}") from error
+        except (ValueError, RecursionError) as error:  # bad UTF-8, bad JSON, a number too long to read
+            raise ApiError(400, f"The request body is not valid JSON: {str(error)[:200]}") from error
 
     # -- dispatch ----------------------------------------------------------
 

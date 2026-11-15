@@ -102,6 +102,27 @@ writing a video.
 - **Detection is first guesses.** The scoring weights and flick threshold have
   not been tuned on many demos; the editor is where you correct the picks.
 
+## What it does on your machine
+
+- **The editor** is a web server on `127.0.0.1` only, running while
+  `fragdirector open` runs. It has no login: any program on your PC can use
+  it, other PCs and other web sites cannot. It reads and writes one shot list
+  file (the one given by `--shots`) and one video next to it.
+- **Capture** starts CS2 through Steam with `-insecure` (demo playback only,
+  never a VAC-secured game) and with the game's TCP console open. That
+  console listens on every network interface while the game runs; a random
+  password made for each run protects it. fragdirector closes the game when
+  the capture ends and never closes a game it did not start.
+- **FFmpeg** is run to record the game window and to join the clips. It only
+  reads the clips folder and writes into it and to the video file.
+- **Shot lists and demos from other people** are treated as untrusted: a
+  shot list can only name ticks, a player and a demo file, and a demo path
+  that points at a network share is not opened unless you pass it yourself
+  with `--demo`. The demo is read by the
+  [demoparser2](https://github.com/LaihoE/demoparser) library.
+
+Nothing is sent anywhere. To report a security problem, open an issue.
+
 ## Files
 
 | Path | What it is |

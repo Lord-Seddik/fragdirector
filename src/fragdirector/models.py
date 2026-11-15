@@ -33,6 +33,10 @@ from typing import Any, Callable
 SHOTLIST_VERSION = 1
 DEMO_VERSION = 1
 DEFAULT_TICK_RATE = 64
+# Limits on what a shot list file or an editor request may hold. They are far
+# outside anything useful and keep every length a finite number.
+MAX_TICK = 2**31 - 1  # the game counts ticks in 32 bits
+MIN_SPEED, MAX_SPEED = 0.01, 100.0
 SIDES = ("CT", "T")
 BOMB_EVENT_KINDS = ("planted", "defused", "exploded")
 
@@ -130,8 +134,8 @@ def _write_json(path: str | os.PathLike, data: dict) -> None:
 def _read_json(path: str | os.PathLike) -> Any:
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise ModelError(f"{path} is not a valid JSON file: {error}") from error
+    except (ValueError, RecursionError) as error:  # bad UTF-8, bad JSON, a number too long to read
+        raise ModelError(f"{path} is not a valid JSON file: {str(error)[:200]}") from error
 
 
 def _check_version(owner: str, data: Any, expected: int) -> dict:
@@ -563,11 +567,16 @@ class Shot:
         _str("Shot", "demo", self.demo, allow_empty=False)
         _int("Shot", "start_tick", self.start_tick, 0)
         _int("Shot", "end_tick", self.end_tick, 0)
+        for name in ("start_tick", "end_tick"):
+            if getattr(self, name) > MAX_TICK:
+                raise ModelError(f"Shot: {name} must be {MAX_TICK} or less")
         _str("Shot", "pov_player", self.pov_player, allow_empty=False)
         _str("Shot", "label", self.label)
         speed = _number("Shot", "speed", self.speed)
         if speed <= 0:
             raise ModelError(f"Shot: speed must be more than 0, got {speed}")
+        if not MIN_SPEED <= speed <= MAX_SPEED:
+            raise ModelError(f"Shot: speed must be between {MIN_SPEED:g} and {MAX_SPEED:g}, got {speed:g}")
         object.__setattr__(self, "speed", speed)
         if self.start_tick >= self.end_tick:
             raise ModelError(

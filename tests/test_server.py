@@ -448,6 +448,50 @@ def test_oversized_and_malformed_bodies(client):
     status, _, _ = client.request("POST", "/api/edit/delete", raw=b"\xff\xfe",
                                   headers={"Content-Type": "application/json"})
     assert status == 400
+    # a number with more digits than Python will read is a plain ValueError
+    status, _, payload = client.request("POST", "/api/edit/delete", raw=b'{"index": ' + b"1" * 5000 + b"}",
+                                        headers={"Content-Type": "application/json"})
+    assert status == 400 and b"not valid JSON" in payload
+    assert len(client.get("/api/shotlist")[1]["shotlist"]["shots"]) == 3
+
+
+def test_values_that_would_break_the_answer_are_refused_and_change_nothing(client):
+    """Found in the T15 review: a speed of 1e-320 or a 400-digit tick used to be
+    kept, and every answer after that failed."""
+    before = client.get("/api/shotlist")[1]
+    status, data = client.post("/api/edit/set_speed", {"index": 0, "speed": 1e-320})
+    assert status == 422 and "between 0.01 and 100" in data["error"]
+
+    bad = three_shots().to_dict()
+    bad["shots"][0]["speed"] = 1e-320
+    status, data = client.json("PUT", "/api/shotlist", {"shotlist": bad})
+    assert status == 422 and "between 0.01 and 100" in data["error"]
+
+    bad = three_shots().to_dict()
+    bad["shots"][0]["end_tick"] = 10**400
+    status, data = client.json("PUT", "/api/shotlist", {"shotlist": bad})
+    assert status == 422 and "end_tick" in data["error"]
+
+    status, data = client.post("/api/edit/trim", {"index": 0, "end_tick": 10**400})
+    assert status == 422
+    assert client.get("/api/shotlist")[1] == before
+
+
+def test_a_shot_list_that_cannot_be_answered_for_is_not_kept(client, monkeypatch):
+    """The answer is worked out before the list is replaced."""
+    import fragdirector.server as server_module
+
+    before = client.get("/api/shotlist")[1]
+
+    def boom(shotlist, demo):
+        if len(shotlist.shots) != 3:
+            raise RuntimeError("cannot answer")
+        return []
+
+    monkeypatch.setattr(server_module, "shotlist_problems", boom)
+    status, data = client.post("/api/edit/delete", {"index": 0})
+    assert status == 500 and data == {"error": "Internal error in the editor server."}
+    assert client.get("/api/shotlist")[1] == before
     status, _, _ = client.request("POST", "/api/edit/delete", raw=b"[" * 100000,
                                   headers={"Content-Type": "application/json"})
     assert status == 400
@@ -717,6 +761,19 @@ def test_make_video_waits_for_a_running_capture(make_client, tmp_path):
     assert status == 409 and "being captured" in data["error"] and not render_runner.calls
     capture_runner.release.set()
     wait_for_capture(client, "done")
+
+
+def test_capture_waits_for_a_running_render(make_client, tmp_path):
+    shots = three_shots()
+    write_clips(shots, tmp_path / "clips")
+    capture_runner, render_runner = FakeRunner(), FakeRender()
+    client = make_client(shots, clips_dir=tmp_path / "clips", capture_runner=capture_runner,
+                         render_runner=render_runner)
+    assert client.post("/api/render", {})[0] == 200
+    status, data = client.post("/api/capture", {"index": 0})
+    assert status == 409 and "video is being made" in data["error"] and not capture_runner.jobs
+    render_runner.release.set()
+    wait_for_render(client, "done")
 
 
 # -- command line ------------------------------------------------------------

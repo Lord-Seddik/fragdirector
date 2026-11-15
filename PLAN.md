@@ -1,6 +1,6 @@
 # PLAN — fragdirector
 
-Status: **approved 2026-11-14**. Next task: T15. T1–T14 done.
+Status: **approved 2026-11-14**. T1–T14 done. T15: review done 2026-11-15, publishing waits for your decisions (see "Notes from T15"). Next task after that: T16.
 
 ## What it is
 
@@ -119,8 +119,10 @@ Sample demo: put one of your `.dem` files in `demos/` (git-ignored). T3 onward n
 | T12 | Capture: implement the method chosen in T4, one clip per shot, resumable; "capture this shot" button in the editor | `src/fragdirector/capture/`, `src/fragdirector/server.py`, tests for command generation | `fragdirector capture shots.json` produces one clip per shot for the sample 5k with correct POVs | [hard] | done |
 | T13 | Assembler: FFmpeg concat, slow-mo, optional crossfade and player-name label; "make video" button in the editor | `src/fragdirector/render.py`, tests | `fragdirector render shots.json` outputs a playable `.mp4` whose length matches the shot list | [medium] | done |
 | T14 | README with install, quick start, screenshots of the editor, a demo GIF; contribution notes | `README.md`, `CONTRIBUTING.md`, `docs/images/editor.png`, `docs/images/demo.gif` | A fresh clone following the README reaches an edited shot list without help | [easy] | done |
-| T15 | Final review: code, security of the local server, of launching the game and of running FFmpeg with user paths; then publish to GitHub | whole repo | Review notes resolved; repo public (you push it) | [hard] | todo |
+| T15 | Final review: code, security of the local server, of launching the game and of running FFmpeg with user paths; then publish to GitHub | whole repo | Review notes resolved; repo public (you push it) | [hard] | in progress (review done and fixes verified; not pushed yet) |
 | T16 | Make `test_demo_files_are_found_as_written_or_beside_the_shot_list` (`tests/test_capture.py`) independent of the current folder: run it with `monkeypatch.chdir(tmp_path)`. It fails when `demos/match.dem` exists under the working directory | `tests/test_capture.py` | `pytest` passes from the repo root and from a folder that has a `demos/match.dem` | [easy] | todo |
+| T17 | Text from a demo that is printed to the terminal (player names, labels, notes) can hold control characters; a hand-made demo could use them to change what the terminal shows. Replace control characters with `?` where the CLI prints (not in the model: capture needs the real name) | `src/fragdirector/cli.py`, `tests/` | `pytest`: a player named with an escape sequence prints without it in `analyze` and `plan` | [easy] | todo |
+| T18 | Capture loose ends found in T15: (a) the recorder's FFmpeg error output is only read after it stops, so a flood of errors could stall the recording until the time-outs; send it to a file. (b) if the game starts but its console never opens (180 s), the game is left running; say so in the error. | `src/fragdirector/capture/game.py`, `src/fragdirector/capture/run.py`, `tests/test_capture.py` | `pytest` with a fake recorder and console; one real capture still works | [medium] | todo |
 
 Notes from T3 (not tasks yet; decide if any are wanted):
 
@@ -236,6 +238,25 @@ Notes from T14 (not tasks yet; decide if any are wanted):
 - The README's clone URL is a placeholder (`<your-account>`) until T15 publishes the repo.
 - Fresh-copy check: the tracked and untracked (not ignored) files were copied into a new folder, installed into a new venv with `pip install -e ".[dev]"`, then `analyze`, `plan --preset major-replay --top 5`, `capture --dry-run` and `pytest` were run. The copy has no `demos/*.dem` except the one added by hand. This found T16.
 - Not checked: the Windows `open` default (opening a browser), `capture` for real (needs CS2), the Make-video button after the README changes.
+
+Notes from T15 (the review; what is left is for you to decide):
+
+- **Read line by line:** `server.py`, `capture/` (`game.py`, `run.py`, `plan.py`), `render.py`, `director.py`, `models.py`, `edits.py`, `parse.py`, `cli.py`. **Checked for one thing only:** `web/*.js` and `index.html` for text from a demo reaching the page as HTML (it cannot: the page only makes elements and text nodes, and the server's Content-Security-Policy blocks inline script), `score.py` for file loading. **Not read line by line:** `detect/*.py`, the rest of the page code, `spikes/capture_one.py`, the tests. The running server was also tried with hostile requests (wrong Host, foreign and `null` Origin, non-JSON writes, path tricks, oversized and odd bodies).
+- **Fixed, each with a test (`pytest`: 422 passed, was 413):**
+  - A request body holding a number of more than 4300 digits crashed the request handler (the connection was dropped, a traceback printed). It now answers 400. The same in a shot list file now gives the normal "not a valid JSON file" message.
+  - A shot with a speed such as `1e-320`, or a tick of hundreds of digits, was accepted and kept; after that every answer about the shot list failed until the list was replaced. A shot's speed must now be between 0.01 and 100 and its ticks at most 2147483647 (`models.py`, `docs/shotlist.md`). The server also works out its answer before it keeps a new shot list, so a list it cannot answer for is never kept.
+  - `fragdirector capture` on a shot list whose `demo` is a network path (`\\server\share\x.dem`) looked for the file there. On Windows that sends your login (as a hash) to that server, so a shot list from someone else could collect it. Such a path is no longer opened; only a file of that name next to the shot list is used, or the one you pass with `--demo`.
+  - The editor let a capture start while the video was being made from the same clips; it now answers 409, like the other way round already did.
+  - An internal error in the editor (500) printed nothing anywhere; the traceback now goes to the console (the browser still gets no details).
+- **Reviewed, no change needed:** the Host and Origin checks, JSON-only writes, no CORS, the body cap, static files by plain name; the save and video paths fixed at startup; console commands (player name and demo path are refused if they hold a quote, semicolon or control character, in two places); every FFmpeg and FFprobe call takes a list of arguments, never a shell; label text reaches FFmpeg through a file; clip names are built from ticks, a cleaned player id and a hash. `director.py`: no problem found reading it; the budget sums keep every shot inside its bounds.
+- **Known and left as it is:** the game's console port listens on every network interface while a capture runs, protected only by the 32-character per-run password, which is also visible to other programs on this PC in the game's command line (CS2 has no option to listen on this PC only). The editor has no login, so any program on this PC can use it. A request whose Origin is another port on localhost is accepted (a T9 decision, kept by a test); a web page there still cannot write, because a JSON write needs a CORS preflight that the server refuses. All three are now in the README under "What it does on your machine".
+- **Also changed for publishing:** a test path that held this PC's user folder name, and a real SteamID in a `docs/capture.md` example, were replaced with made-up ones. README has the new section named above.
+- **Your decisions before pushing:**
+  1. All 3 commits carry your personal e-mail address as author; it becomes public with the push. To hide it, set GitHub's no-reply address and rewrite the 3 commits before the first push.
+  2. `docs/images/editor.png` and `demo.gif` show the player names of your sample demo, and `docs/capture.md` and the spike use the name `sedx` in an example. Fine if you are happy for those to be public.
+  3. The repository's name and your GitHub account, to replace `<your-account>` in the README's clone line. `gh` is not installed here, so the repo is made on github.com.
+  4. `PLAN.md`, `CLAUDE.md` and `.claude/agents/` are tracked and would be published (the README lists `PLAN.md`).
+- Nothing was committed or pushed in T15. There is no Git remote yet, and the branch is `master`.
 
 After T11 the tool is already useful without capture: you get an edited shot
 list with exact round times and players, which you can follow by hand in the

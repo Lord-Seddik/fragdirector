@@ -71,7 +71,7 @@ Checked when the file is loaded (an error names the field):
 
 - the fields above and no others; ticks are whole numbers, 0 or more
 - `start_tick` is before `end_tick`
-- `speed` is more than 0
+- `speed` is between 0.01 and 100, and no tick is above 2147483647
 
 Checked against the demo (`shot_problems` / `shotlist_problems` in
 `models.py`):

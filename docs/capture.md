@@ -121,7 +121,7 @@ the same code for that one shot in the background (`POST /api/capture`).
 - **One clip per distinct footage.** Shots that differ only in speed or label
   share a clip; slow motion is applied when the video is assembled (T13).
   The clip name comes from the shot alone (`clip_path`), e.g.
-  `118241-119378_76561199661556813_b334da78.mp4` in `clips/` next to the
+  `118241-119378_76561198000000001_b334da78.mp4` in `clips/` next to the
   shot list.
 - **Resumable.** A clip is written as `.part.mp4`, its frame count checked,
   then renamed. An existing clip is complete; a failed or interrupted run is

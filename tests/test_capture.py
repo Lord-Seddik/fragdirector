@@ -188,7 +188,7 @@ def test_launch_command_always_has_a_password():
 
 
 def test_console_commands_quote_their_arguments():
-    path = Path("C:/Users/DZ Laptops/demos/x.dem")
+    path = Path("C:/Users/Some User/demos/x.dem")
     assert playdemo_command(path) == f'playdemo "{path}"'
     assert spectate_commands("Ünïcödé ☆") == ["spec_mode 1", 'spec_player "Ünïcödé ☆"']
     with pytest.raises(CaptureError):
@@ -459,6 +459,32 @@ def test_demo_files_are_found_as_written_or_beside_the_shot_list(tmp_path, monke
         demo_files(shotlist, shots_file, tmp_path / "copy" / "else.dem")
     with pytest.raises(CaptureError, match="not found"):
         demo_files(shots(replace(shot(), demo="nowhere/gone.dem")), shots_file)
+
+
+@pytest.mark.parametrize("written", [
+    "\\\\server\\share\\match.dem", "//server/share/match.dem", "\\/server/share/match.dem",
+    "\\\\?\\UNC\\server\\share\\match.dem",
+])
+def test_a_network_path_in_a_shot_list_is_never_opened(tmp_path, monkeypatch, written):
+    """A shot list from someone else must not make Windows log on to their server."""
+    opened = []
+    real_is_file = Path.is_file
+
+    def is_file(self):
+        opened.append(str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    monkeypatch.chdir(tmp_path)
+    shots_file = tmp_path / "shots.json"
+    shotlist = shots(replace(shot(), demo=written))
+    with pytest.raises(CaptureError, match="not found"):
+        demo_files(shotlist, shots_file)
+    assert opened == [str(tmp_path / "match.dem")]
+
+    # a file of that name next to the shot list is used; --demo still takes any path
+    (tmp_path / "match.dem").write_bytes(b"")
+    assert demo_files(shotlist, shots_file) == {"match.dem": tmp_path / "match.dem"}
 
 
 # -- the CLI -------------------------------------------------------------------

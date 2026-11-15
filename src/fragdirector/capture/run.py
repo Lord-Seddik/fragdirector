@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from fragdirector.capture.game import (
     Console,
@@ -43,12 +43,22 @@ from fragdirector.capture.plan import (
 from fragdirector.models import ShotList, demo_file_name
 
 
+def _is_network_path(text: str) -> bool:
+    """True for a path on a network share (two leading slashes of either kind)."""
+    return len(text) >= 2 and text[0] in "\\/" and text[1] in "\\/"
+
+
 def demo_files(shotlist: ShotList, shots_file: Path, override: Path | None = None) -> dict[str, Path]:
     """The demo file for each demo the shot list names, keyed by ``demo_file_name``.
 
     A shot's ``demo`` is tried as written (from the current folder), then
     next to the shot list file. ``override`` replaces the demo whose file
     name it has. Raises ``CaptureError`` naming every demo not found.
+
+    A shot list can come from someone else, so a ``demo`` that names a
+    network share is never opened: Windows would send this user's login to
+    that server. Only a file of that name next to the shot list is used; a
+    demo that really is on a share can be given with ``override`` (``--demo``).
     """
     found: dict[str, Path] = {}
     missing: list[str] = []
@@ -58,6 +68,8 @@ def demo_files(shotlist: ShotList, shots_file: Path, override: Path | None = Non
             continue
         if override is not None and demo_file_name(str(override)) == key:
             candidates = [override]
+        elif _is_network_path(shot.demo):
+            candidates = [shots_file.parent / PureWindowsPath(shot.demo).name]
         else:
             written = Path(shot.demo)
             candidates = [written] if written.is_absolute() else [written, shots_file.parent / written]

@@ -120,6 +120,26 @@ def test_shot_rejects_bad_values():
         shot(start=1.5)
 
 
+def test_shot_rejects_values_far_outside_anything_useful():
+    """A shot list file can come from someone else; these would make a length
+    that is not a finite number."""
+    for speed in (1e-320, 0.001, 1000, 1e300):
+        with pytest.raises(ModelError, match="between 0.01 and 100"):
+            shot(speed=speed)
+    assert shot(speed=0.01).speed == 0.01 and shot(speed=100).speed == 100.0
+    with pytest.raises(ModelError, match="end_tick must be"):
+        shot(end=10**400)
+    with pytest.raises(ModelError, match="start_tick must be"):
+        shot(start=2**31, end=2**31 + 5)
+
+
+def test_a_number_too_long_to_read_is_a_model_error(tmp_path):
+    path = tmp_path / "shots.json"
+    path.write_text('{"version": 1, "tick_rate": ' + "1" * 5000 + ', "shots": []}', encoding="utf-8")
+    with pytest.raises(ModelError, match="not a valid JSON file"):
+        ShotList.load(path)
+
+
 def test_shot_speed_is_stored_as_float():
     assert isinstance(shot(speed=1).speed, float)
 
