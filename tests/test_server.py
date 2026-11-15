@@ -11,6 +11,7 @@ from conftest import DEMO_PATH, P1, P2, P3, build_demo
 from fragdirector.capture import CaptureError, JobResult, clip_path
 from fragdirector.cli import main
 from fragdirector.models import Shot, ShotList
+from fragdirector.render import RenderError, RenderResult
 from fragdirector.server import MAX_BODY_BYTES, build_app, make_server
 
 
@@ -567,6 +568,155 @@ def test_capture_needs_a_clips_folder(make_client):
     status, data = client.post("/api/capture", {"index": 0})
     assert status == 409 and "clips folder" in data["error"]
     assert client.get("/api/capture")[1]["captured"] == []
+
+
+# -- render ------------------------------------------------------------------
+
+
+class FakeRender:
+    """Stands in for FFmpeg: writes the video file, or fails, when released."""
+
+    def __init__(self, fail=None):
+        self.fail = fail
+        self.release = threading.Event()
+        self.calls = []
+
+    def __call__(self, shotlist, clips_dir, out_path, options, log):
+        self.calls.append((shotlist, clips_dir, out_path, options))
+        log("rendering (fake)")
+        self.release.wait(10)
+        if self.fail is not None:
+            raise RenderError(self.fail)
+        out_path.write_bytes(b"video")
+        return RenderResult(out_path, len(shotlist), 60, 600, 10.0, 10.0)
+
+
+def wait_for_render(client, state, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        _, data = client.get("/api/render")
+        if data["render"]["state"] == state:
+            return data
+        time.sleep(0.02)
+    raise AssertionError(f"render never reached {state!r}: {data}")
+
+
+def write_clips(shots, folder):
+    folder.mkdir(parents=True, exist_ok=True)
+    for s in shots.shots:
+        clip_path(s, folder).write_bytes(b"clip")
+
+
+def test_render_status_names_the_video_file(make_client, tmp_path):
+    client = make_client(three_shots(), clips_dir=tmp_path / "clips")
+    status, data = client.get("/api/render")
+    assert status == 200 and data["render"]["state"] == "idle"
+    assert data["video_path"] == str(tmp_path / "shots.mp4") and data["video_exists"] is False
+    (tmp_path / "shots.mp4").write_bytes(b"x")
+    assert client.get("/api/render")[1]["video_exists"] is True
+
+
+def test_make_video_runs_in_the_background(make_client, tmp_path):
+    shots = three_shots()
+    write_clips(shots, tmp_path / "clips")
+    runner = FakeRender()
+    client = make_client(shots, clips_dir=tmp_path / "clips", render_runner=runner)
+    status, data = client.post("/api/render", {"crossfade": 0.5, "labels": True})
+    assert status == 200 and data["render"]["state"] == "running"
+
+    assert client.get("/api/shotlist")[0] == 200  # the editor keeps answering
+    status, data = client.post("/api/render", {})
+    assert status == 409 and "already being made" in data["error"]
+
+    runner.release.set()
+    data = wait_for_render(client, "done")
+    assert "rendering (fake)" in data["render"]["log"]
+    assert str(tmp_path / "shots.mp4") in data["render"]["message"]
+    assert data["video_exists"] is True
+    [(sent, clips_dir, out_path, options)] = runner.calls
+    assert sent == shots and clips_dir == tmp_path / "clips" and out_path == tmp_path / "shots.mp4"
+    assert options.crossfade_seconds == 0.5 and options.labels is True
+
+
+def test_make_video_defaults_to_hard_cuts_without_labels(make_client, tmp_path):
+    shots = three_shots()
+    write_clips(shots, tmp_path / "clips")
+    runner = FakeRender()
+    runner.release.set()
+    client = make_client(shots, clips_dir=tmp_path / "clips", render_runner=runner)
+    assert client.post("/api/render", {})[0] == 200
+    wait_for_render(client, "done")
+    options = runner.calls[0][3]
+    assert options.crossfade_seconds == 0 and options.labels is False
+
+
+def test_make_video_failure_is_reported(make_client, tmp_path):
+    shots = three_shots()
+    write_clips(shots, tmp_path / "clips")
+    runner = FakeRender(fail="FFmpeg could not make the video: boom")
+    runner.release.set()
+    client = make_client(shots, clips_dir=tmp_path / "clips", render_runner=runner)
+    assert client.post("/api/render", {})[0] == 200
+    data = wait_for_render(client, "failed")
+    assert "boom" in data["render"]["message"] and data["video_exists"] is False
+
+
+def test_make_video_needs_every_clip(make_client, tmp_path):
+    shots = three_shots()
+    write_clips(ShotList(shots=shots.shots[:1], tick_rate=64), tmp_path / "clips")
+    runner = FakeRender()
+    client = make_client(shots, clips_dir=tmp_path / "clips", render_runner=runner)
+    status, data = client.post("/api/render", {})
+    assert status == 422 and "2 of 3 shot(s) have no clip yet (shot 2, 3)" in data["error"]
+    assert not runner.calls and client.get("/api/render")[1]["render"]["state"] == "idle"
+
+
+@pytest.mark.parametrize("body, status, fragment", [
+    ({"crossfade": 9}, 400, "between 0 and 5"),
+    ({"crossfade": -1}, 400, "between 0 and 5"),
+    ({"crossfade": "0.5"}, 400, "must be a number"),
+    ({"labels": "yes"}, 400, "true or false"),
+    ({"out": "C:/x.mp4"}, 400, "Unknown field"),
+    ({"crossfade": 0.5, "path": "x"}, 400, "Unknown field"),
+])
+def test_invalid_render_requests(make_client, tmp_path, body, status, fragment):
+    shots = three_shots()
+    write_clips(shots, tmp_path / "clips")
+    runner = FakeRender()
+    client = make_client(shots, clips_dir=tmp_path / "clips", render_runner=runner)
+    got, data = client.post("/api/render", body)
+    assert got == status and fragment in data["error"]
+    assert not runner.calls
+
+
+def test_make_video_of_an_empty_timeline_is_refused(make_client, tmp_path):
+    runner = FakeRender()
+    client = make_client(ShotList(tick_rate=64), clips_dir=tmp_path / "clips", render_runner=runner)
+    status, data = client.post("/api/render", {})
+    assert status == 409 and "empty" in data["error"] and not runner.calls
+
+
+def test_make_video_needs_a_clips_folder_and_a_shot_list_file(make_client, tmp_path):
+    shots = three_shots()
+    assert make_client(shots)  # no clips folder
+    status, data = make_client(shots).post("/api/render", {})
+    assert status == 409 and "clips folder" in data["error"]
+    status, data = make_client(shots, save=False, clips_dir=tmp_path / "clips").post("/api/render", {})
+    assert status == 409 and "shot list file" in data["error"]
+    assert make_client(shots, save=False).get("/api/render")[1]["video_path"] is None
+
+
+def test_make_video_waits_for_a_running_capture(make_client, tmp_path):
+    shots = three_shots()
+    write_clips(shots, tmp_path / "clips")
+    capture_runner, render_runner = FakeRunner(), FakeRender()
+    client = make_client(shots, clips_dir=tmp_path / "clips", capture_runner=capture_runner,
+                         render_runner=render_runner)
+    assert client.post("/api/capture", {"index": 0})[0] == 200
+    status, data = client.post("/api/render", {})
+    assert status == 409 and "being captured" in data["error"] and not render_runner.calls
+    capture_runner.release.set()
+    wait_for_capture(client, "done")
 
 
 # -- command line ------------------------------------------------------------

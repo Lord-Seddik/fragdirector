@@ -68,6 +68,24 @@
           <pre id="capture-log"></pre>
         </details>
       </div>
+      <form id="make-video" class="make-video">
+        <h3>Make the video</h3>
+        <div class="add-fields">
+          <label>Crossfade between shots (seconds, 0 = hard cuts)
+            <input type="number" id="video-crossfade" min="0" max="5" step="0.1" value="0">
+          </label>
+          <label class="check"><input type="checkbox" id="video-labels"> Write each shot's label on the picture</label>
+        </div>
+        <button type="submit" id="make-video-button" class="primary">Make video</button>
+        <span id="video-hint" class="muted small"></span>
+      </form>
+      <div id="render-status" class="capture-status" hidden>
+        <p id="render-message"></p>
+        <details>
+          <summary>Video log</summary>
+          <pre id="render-log"></pre>
+        </details>
+      </div>
       <ul id="draft-notes" class="notes"></ul>
       <ul id="problems" class="problems"></ul>
       <ol id="timeline" class="timeline"></ol>

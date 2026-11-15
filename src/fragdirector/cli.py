@@ -118,6 +118,41 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument(
         "--demo-ui", action="store_true", help="keep the playback bar visible (shows the tick, for checking)"
     )
+
+    render = commands.add_parser(
+        "render",
+        help="put the captured clips together into one video (needs FFmpeg)",
+        description="Join the clips 'fragdirector capture' made into one .mp4: each shot is cut to "
+        "its length, slow motion is applied, and shots are joined with a hard cut or a crossfade. "
+        "The video has no sound. Every shot needs its clip; capture the missing ones first.",
+    )
+    render.add_argument("shots", help="shot list file (from 'plan' or the editor)")
+    render.add_argument(
+        "--clips",
+        metavar="DIR",
+        help="folder the clips are in (default: 'clips' next to the shot list file)",
+    )
+    render.add_argument(
+        "--out",
+        metavar="PATH",
+        help="the video to write, ending in .mp4 (default: the shot list's name with .mp4)",
+    )
+    render.add_argument(
+        "--crossfade",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="fade between shots for this long (default 0: hard cuts). The video is this much "
+        "shorter for every join.",
+    )
+    render.add_argument(
+        "--labels", action="store_true", help="write each shot's label on the picture for its first seconds"
+    )
+    render.add_argument("--crf", type=int, default=18, help="x264 quality, 0-51, lower is better (default 18)")
+    render.add_argument("--force", action="store_true", help="replace the video if it already exists")
+    render.add_argument(
+        "--dry-run", action="store_true", help="check the clips and print the FFmpeg command, write nothing"
+    )
     return parser
 
 
@@ -397,6 +432,40 @@ def capture(args: argparse.Namespace) -> int:
     return 1 if counts["failed"] else 0
 
 
+def render(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from fragdirector.models import ShotList
+    from fragdirector.render import RenderError, RenderOptions, expected_seconds, render_video
+
+    shots_file = Path(args.shots)
+    clips = Path(args.clips) if args.clips else shots_file.parent / "clips"
+    out = Path(args.out) if args.out else shots_file.with_suffix(".mp4")
+
+    def log(message: str) -> None:
+        print(f"[render] {message}", flush=True)
+
+    try:
+        options = RenderOptions(crossfade_seconds=args.crossfade, labels=args.labels, crf=args.crf)
+        shotlist = ShotList.load(shots_file)
+        result = render_video(
+            shotlist, clips, out, options, log=log, overwrite=args.force, dry_run=args.dry_run
+        )
+    except FileNotFoundError as error:
+        print(f"fragdirector: {error.filename or error} does not exist.", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\nfragdirector: render interrupted; no video was written.", file=sys.stderr)
+        return 130
+    except (RenderError, ValueError, OSError) as error:
+        print(f"fragdirector: cannot render:\n{error}", file=sys.stderr)
+        return 1
+    if result is not None:
+        print(f"Wrote {result.path} ({result.seconds:.1f} s; the shot list asks for "
+              f"{expected_seconds(shotlist, options):.1f} s)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # Player names can hold characters the Windows console cannot show.
     for stream in (sys.stdout, sys.stderr):
@@ -412,6 +481,8 @@ def main(argv: list[str] | None = None) -> int:
         return open_editor(args)
     if args.command == "capture":
         return capture(args)
+    if args.command == "render":
+        return render(args)
     parser.print_help()
     return 0
 

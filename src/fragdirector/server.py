@@ -33,6 +33,10 @@ API (all JSON; a refused request answers 4xx with ``{"error": "..."}``)::
                                     of the current list already have a clip
     POST /api/capture               {index}  capture that shot now (starts CS2;
                                     runs in the background, one at a time)
+    GET  /api/render                render state, its log, and the video file
+    POST /api/render                {crossfade?, labels?}  make the video from the
+                                    clips (needs every shot's clip; runs in the
+                                    background, one at a time)
 
 Every endpoint that touches the shot list answers with
 ``{"shotlist": ..., "duration_seconds": ..., "problems": [...]}``. An edit
@@ -51,6 +55,9 @@ Safety (T15 reviews this):
 * a capture starts the game on a shot already in the server's list; the
   demo, the clips folder and every command come from the server, never
   from the request (which only gives a shot position)
+* a render writes one file, next to the shot list file and named after it
+  (``shots.json`` -> ``shots.mp4``); the request gives only a crossfade
+  length and a labels switch, both checked, and never a path
 """
 
 from __future__ import annotations
@@ -79,6 +86,14 @@ from fragdirector.models import (
     ShotList,
     demo_file_name,
     shotlist_problems,
+)
+from fragdirector.render import (
+    RenderError,
+    RenderOptions,
+    RenderResult,
+    missing_clips,
+    missing_clips_message,
+    render_video,
 )
 from fragdirector.score import Weights, rank_moments
 
@@ -158,14 +173,23 @@ CaptureRunner = Callable[[list[Job], Callable[[str], None]], list[JobResult]]
 CAPTURE_LOG_LINES = 60
 
 
+RenderRunner = Callable[[ShotList, Path, Path, RenderOptions, Callable[[str], None]], "RenderResult | None"]
+
+
+def default_render_runner(
+    shotlist: ShotList, clips_dir: Path, out_path: Path, options: RenderOptions, log: Callable[[str], None]
+) -> "RenderResult | None":
+    return render_video(shotlist, clips_dir, out_path, options, log=log, overwrite=True)
+
+
 def default_capture_runner(jobs: list[Job], log: Callable[[str], None]) -> list[JobResult]:
     from fragdirector.capture import capture_jobs
 
     return capture_jobs(jobs, log=log, force=True)  # the button means "capture (again) now"
 
 
-class CaptureState:
-    """The one capture the editor may run at a time. Has its own lock, so the
+class TaskState:
+    """The one background task (a capture, a render) the editor may run at a time. Has its own lock, so the
     editor keeps answering while the game records."""
 
     def __init__(self) -> None:
@@ -206,6 +230,7 @@ class EditorApp:
         save_path: str | Path | None = None,
         clips_dir: str | Path | None = None,
         capture_runner: CaptureRunner | None = None,
+        render_runner: RenderRunner | None = None,
     ) -> None:
         self.demo = demo
         self.moments = list(moments)
@@ -213,7 +238,9 @@ class EditorApp:
         self.save_path = Path(save_path) if save_path is not None else None
         self.clips_dir = Path(clips_dir) if clips_dir is not None else None
         self.capture_runner = capture_runner or default_capture_runner
-        self.capture = CaptureState()
+        self.capture = TaskState()
+        self.render_runner = render_runner or default_render_runner
+        self.render = TaskState()
         self._lock = threading.Lock()
         self._edit_routes: dict[str, Callable[[dict], ShotList]] = {
             "trim": self._trim,
@@ -248,6 +275,7 @@ class EditorApp:
             "/api/shotlist/load": {"POST": self._load},
             "/api/preset": {"POST": self._preset},
             "/api/capture": {"GET": self._get_capture, "POST": self._start_capture},
+            "/api/render": {"GET": self._get_render, "POST": self._start_render},
         }
         if path.startswith("/api/edit/"):
             name = path.removeprefix("/api/edit/")
@@ -510,6 +538,70 @@ class EditorApp:
         else:
             capture.finish("done", f"Captured shot {index + 1} to {results[0].job.clip.name}.")
 
+    # -- render ------------------------------------------------------------
+
+    def video_path(self) -> Path | None:
+        """The one file a render writes: the shot list file with ``.mp4``."""
+        return self.save_path.with_suffix(".mp4") if self.save_path is not None else None
+
+    def _get_render(self, _body: Any) -> dict:
+        video = self.video_path()
+        return {
+            "render": self.render.to_json(),
+            "video_path": str(video) if video is not None else None,
+            "video_exists": video is not None and video.is_file(),
+        }
+
+    def _start_render(self, body: Any) -> dict:
+        body = _body(body, ("crossfade", "labels"))
+        crossfade = _number(body, "crossfade", required=False) or 0.0
+        labels = body.get("labels", False)
+        if not isinstance(labels, bool):
+            raise ApiError(400, f"Field 'labels' must be true or false, got {labels!r}.")
+        try:
+            options = RenderOptions(crossfade_seconds=crossfade, labels=labels)
+        except RenderError as error:
+            raise ApiError(400, str(error)) from error
+        video = self.video_path()
+        if self.clips_dir is None or video is None:
+            raise ApiError(409, "No clips folder or shot list file was given when the editor was started.")
+        shotlist = self.shotlist
+        if not shotlist.shots:
+            raise ApiError(409, "The timeline is empty; there is nothing to make a video of.")
+        with self.capture.lock:
+            if self.capture.state == "running":
+                raise ApiError(409, "A shot is being captured; wait for it to finish.")
+        with self.render.lock:
+            if self.render.state == "running":
+                raise ApiError(409, "The video is already being made; wait for it to finish.")
+        missing = missing_clips(shotlist, self.clips_dir)
+        if missing:
+            raise ApiError(422, missing_clips_message(missing, len(shotlist.shots)))
+
+        with self.render.lock:
+            self.render.state = "running"
+            self.render.message = "Making the video."
+            self.render.log.clear()
+        thread = threading.Thread(
+            target=self._run_render, args=(shotlist, self.clips_dir, video, options), daemon=True
+        )
+        self.render.thread = thread
+        thread.start()
+        return self._get_render(None)
+
+    def _run_render(self, shotlist: ShotList, clips_dir: Path, video: Path, options: RenderOptions) -> None:
+        render = self.render
+        try:
+            result = self.render_runner(shotlist, clips_dir, video, options, render.add_line)
+        except (RenderError, OSError) as error:
+            render.finish("failed", f"The video was not made: {error}")
+            return
+        except Exception as error:  # a bug; keep the editor running and say so
+            render.finish("failed", f"The video was not made (internal error: {error}).")
+            return
+        seconds = f" ({result.seconds:.1f} s)" if result is not None else ""
+        render.finish("done", f"Video written to {video}{seconds}.")
+
 
 def build_app(
     demo: Demo,
@@ -518,10 +610,12 @@ def build_app(
     save_path: str | Path | None = None,
     clips_dir: str | Path | None = None,
     capture_runner: CaptureRunner | None = None,
+    render_runner: RenderRunner | None = None,
 ) -> EditorApp:
     """An app for a parsed demo; its moments are the ones ``analyze`` lists."""
     return EditorApp(
-        demo, rank_moments(detect_basic(demo), weights), shotlist, save_path, clips_dir, capture_runner
+        demo, rank_moments(detect_basic(demo), weights), shotlist, save_path, clips_dir,
+        capture_runner, render_runner,
     )
 
 

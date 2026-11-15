@@ -21,6 +21,8 @@ let busy = false; // one request at a time, so edits cannot overtake each other
 let savedSnapshot = null; // the shots as they were when last saved or loaded
 let captureInfo = null; // last reply of GET /api/capture
 let capturePoll = null; // timer while a capture runs
+let renderInfo = null; // last reply of GET /api/render
+let renderPoll = null; // timer while the video is being made
 
 // ---------------------------------------------------------------- helpers
 
@@ -122,6 +124,7 @@ function captureRunning() {
 }
 
 function applyCaptureInfo() {
+  applyRenderInfo(); // the video button depends on which clips exist
   const info = captureInfo;
   const captured = info ? info.captured : [];
   document.querySelectorAll(".clip-mark").forEach((node) => {
@@ -169,6 +172,78 @@ async function captureShot(index) {
     showMessage(`Not captured: ${error.message}`, true);
   }
   refreshCapture();
+}
+
+// ---------------------------------------------------------------- make the video
+//
+// Putting the clips together also runs on the server in the background
+// (FFmpeg, a minute or so). It needs a clip for every shot, which is why the
+// button waits for "clip ready" on all of them.
+
+function renderRunning() {
+  return Boolean(renderInfo && renderInfo.render.state === "running");
+}
+
+function allClipsReady() {
+  const captured = captureInfo ? captureInfo.captured : [];
+  return captured.length > 0 && captured.every(Boolean);
+}
+
+function applyRenderInfo() {
+  const info = renderInfo;
+  const shots = state.shotlist ? state.shotlist.shots.length : 0;
+  let hint = "";
+  if (!info || info.video_path === null) hint = "Start the editor with a shot list file to make a video.";
+  else if (shots === 0) hint = "The timeline is empty.";
+  else if (captureRunning()) hint = "Wait for the capture to finish.";
+  else if (!allClipsReady()) hint = "Every shot needs its clip first: use Capture on the shots marked without one.";
+  else if (info.video_exists) hint = `Making it again replaces ${info.video_path}.`;
+  else hint = `Writes ${info.video_path}.`;
+  $("video-hint").textContent = hint;
+  $("make-video-button").disabled = busy || renderRunning() || captureRunning() || shots === 0
+    || !info || info.video_path === null || !allClipsReady();
+
+  const box = $("render-status");
+  if (!info || info.render.state === "idle") {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  box.className = `capture-status ${info.render.state}`;
+  $("render-message").textContent = info.render.message;
+  $("render-log").textContent = info.render.log.join("\n");
+}
+
+async function refreshRender() {
+  try {
+    renderInfo = await api("GET", "/api/render");
+  } catch (error) {
+    return; // the next poll or edit tries again
+  }
+  applyRenderInfo();
+  if (renderRunning() && renderPoll === null) {
+    renderPoll = setInterval(refreshRender, CAPTURE_POLL_MS);
+  } else if (!renderRunning() && renderPoll !== null) {
+    clearInterval(renderPoll);
+    renderPoll = null;
+  }
+}
+
+async function makeVideo(event) {
+  event.preventDefault();
+  if (busy || renderRunning()) return;
+  const crossfade = Number($("video-crossfade").value.trim() === "" ? "0" : $("video-crossfade").value);
+  if (!Number.isFinite(crossfade) || crossfade < 0 || crossfade > 5) {
+    showMessage("The crossfade must be a number of seconds from 0 to 5.", true);
+    return;
+  }
+  try {
+    renderInfo = await api("POST", "/api/render", { crossfade, labels: $("video-labels").checked });
+    showMessage("Making the video. This takes a minute or so; the page stays usable.", false);
+  } catch (error) {
+    showMessage(`Video not made: ${error.message}`, true);
+  }
+  refreshRender();
 }
 
 function markSaved() {
@@ -622,6 +697,8 @@ function initAddForm() {
 function initTimeline() {
   $("undo").addEventListener("click", undo);
   $("redo").addEventListener("click", redo);
+  $("make-video").addEventListener("submit", makeVideo);
+  refreshRender();
   initAddForm();
   document.addEventListener("keydown", (event) => {
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;

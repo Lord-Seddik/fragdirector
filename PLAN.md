@@ -1,6 +1,6 @@
 # PLAN — fragdirector
 
-Status: **approved 2026-11-14**. Next task: T13. T1–T12 done.
+Status: **approved 2026-11-14**. Next task: T14. T1–T13 done.
 
 ## What it is
 
@@ -117,7 +117,7 @@ Sample demo: put one of your `.dem` files in `demos/` (git-ignored). T3 onward n
 | T10 | Editor — moments panel: list, filters, tick to include, apply preset, generates the first-draft timeline | `src/fragdirector/web/index.html`, `src/fragdirector/web/app.js`, `src/fragdirector/web/style.css` | In the browser: filter to one player, tick 2 moments, timeline shows their shots; reload keeps them | [medium] | done |
 | T11 | Editor — timeline editing: trim by drag and by ±0.5 s, delete, duplicate, reorder, change POV, speed, label, add shot by hand, undo/redo, total length | `src/fragdirector/web/app.js`, `src/fragdirector/web/timeline.js`, `src/fragdirector/web/style.css` | In the browser: do each edit once on the sample 5k, save, reopen — the saved shot list matches what was on screen; invalid edits are refused with a message | [medium] | done |
 | T12 | Capture: implement the method chosen in T4, one clip per shot, resumable; "capture this shot" button in the editor | `src/fragdirector/capture/`, `src/fragdirector/server.py`, tests for command generation | `fragdirector capture shots.json` produces one clip per shot for the sample 5k with correct POVs | [hard] | done |
-| T13 | Assembler: FFmpeg concat, slow-mo, optional crossfade and player-name label; "make video" button in the editor | `src/fragdirector/render.py`, tests | `fragdirector render shots.json` outputs a playable `.mp4` whose length matches the shot list | [medium] | todo |
+| T13 | Assembler: FFmpeg concat, slow-mo, optional crossfade and player-name label; "make video" button in the editor | `src/fragdirector/render.py`, tests | `fragdirector render shots.json` outputs a playable `.mp4` whose length matches the shot list | [medium] | done |
 | T14 | README with install, quick start, screenshots of the editor, a demo GIF; contribution notes | `README.md`, `CONTRIBUTING.md` | A fresh clone following the README reaches an edited shot list without help | [easy] | todo |
 | T15 | Final review: code, security of the local server, of launching the game and of running FFmpeg with user paths; then publish to GitHub | whole repo | Review notes resolved; repo public (you push it) | [hard] | todo |
 
@@ -217,6 +217,17 @@ Notes from T12 (not tasks yet; decide if any are wanted). Details in `docs/captu
 - After a forward seek the demo sometimes runs past the shot start before the pause check stops it; the clip is then retried with a backward seek (cost: about 15 s, seen twice in 8 clips).
 - Not checked: the editor's Capture button against the real game (the endpoint is tested with a fake runner; it calls the same code as the CLI); a shot list with two demos; a shot starting within 2 s of a spawn; `--fps` other than 60.
 - T15 review items: `POST /api/capture` starts the game from a local web request (protected by the same Host/Origin/JSON checks as the other endpoints, request gives only a shot position); the console password is now 32 hex characters per run and the port is checked free before the game starts.
+
+Notes from T13 (not tasks yet; decide if any are wanted). Details in `docs/render.md`:
+
+- T13 also touched `src/fragdirector/cli.py` (new `fragdirector render <shots.json> [--clips] [--out] [--crossfade SECONDS] [--labels] [--crf] [--force] [--dry-run]`), `src/fragdirector/server.py` (`GET`/`POST /api/render`; the capture state class is now `TaskState`, used for both), `src/fragdirector/web/index.html`, `timeline.js`, `style.css` (a "Make the video" form with crossfade, labels, button and status box), and `tests/test_server.py`.
+- **Label = the shot's own `label` text**, not a looked-up player name: the shot list does not hold names, and the director already writes "<name>'s view" labels. Edit the label in the editor to change it. Shown bottom-left for the first 3 s (`RenderOptions.label_seconds`; no flag yet).
+- Length is exact to the frame for hard cuts (checked: the sample 5k, 8 shots, 44.77 s = the shot list's 44.77 s, 2686 frames, also with one shot at 0.5x). With a crossfade it is `crossfade x (shots - 1)` shorter (checked: 0.4 s gave 41.97 s = 44.77 - 7 x 0.4) and the frame count may differ by up to one frame per join.
+- Slow motion repeats frames (30 distinct pictures per second at 0.5x of a 60 fps clip). Smoother needs a higher capture `--fps` or frame interpolation (`minterpolate`, slow); not done.
+- Speed: about 85 s for 44.8 s of 1080p60 on this laptop (x264 `medium`, CPU only). A faster preset or `h264_nvenc` would cut it; not done.
+- The editor's Make video button always writes `<shot list name>.mp4` next to the shot list and replaces it; the CLI refuses to replace a file without `--force`. The page does not play or link the video; it shows the path.
+- Checked in the browser pane: the button, its hint and status box, and a real render of the 8 sample clips (done, file 1920x1080, 2686 frames). Not checked in the browser: the crossfade and labels inputs (the automation could not fill them; the same options are covered by the CLI run and by `test_server.py`). `pytest` 413 passed. One run showed a single failure of the old `test_oversized_and_malformed_bodies` (connection reset); three later full runs passed.
+- T15 review items: `render_video` runs FFmpeg with the shot list's clip paths (derived from the shot, not free text), label text goes through files, and the editor request gives only a number and a switch. A very long shot list is refused at about 30 000 characters of filter graph (measured: about 270 shots, or about 90 with labels).
 
 After T11 the tool is already useful without capture: you get an edited shot
 list with exact round times and players, which you can follow by hand in the

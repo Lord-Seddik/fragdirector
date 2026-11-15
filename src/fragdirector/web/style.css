@@ -195,6 +195,10 @@ button.link { border: 0; background: none; color: var(--accent); padding: 0; tex
 .add-fields input, .add-fields select { width: 100%; font: inherit; }
 .add-shot button { justify-self: start; }
 
+.make-video { margin: 0 0 0.75rem; display: grid; gap: 0.5rem; }
+.make-video button { justify-self: start; }
+.make-video .check { display: flex; align-items: center; gap: 0.4rem; align-self: end; }
+
 .clip-mark { color: var(--ok); }
 .shot-buttons button.capture { margin-left: auto; }
 .capture-status {
