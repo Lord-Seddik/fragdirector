@@ -1,6 +1,6 @@
 # PLAN — fragdirector
 
-Status: **approved 2026-11-14**. Next task: T14. T1–T13 done.
+Status: **approved 2026-11-14**. Next task: T15. T1–T14 done.
 
 ## What it is
 
@@ -118,8 +118,9 @@ Sample demo: put one of your `.dem` files in `demos/` (git-ignored). T3 onward n
 | T11 | Editor — timeline editing: trim by drag and by ±0.5 s, delete, duplicate, reorder, change POV, speed, label, add shot by hand, undo/redo, total length | `src/fragdirector/web/app.js`, `src/fragdirector/web/timeline.js`, `src/fragdirector/web/style.css` | In the browser: do each edit once on the sample 5k, save, reopen — the saved shot list matches what was on screen; invalid edits are refused with a message | [medium] | done |
 | T12 | Capture: implement the method chosen in T4, one clip per shot, resumable; "capture this shot" button in the editor | `src/fragdirector/capture/`, `src/fragdirector/server.py`, tests for command generation | `fragdirector capture shots.json` produces one clip per shot for the sample 5k with correct POVs | [hard] | done |
 | T13 | Assembler: FFmpeg concat, slow-mo, optional crossfade and player-name label; "make video" button in the editor | `src/fragdirector/render.py`, tests | `fragdirector render shots.json` outputs a playable `.mp4` whose length matches the shot list | [medium] | done |
-| T14 | README with install, quick start, screenshots of the editor, a demo GIF; contribution notes | `README.md`, `CONTRIBUTING.md` | A fresh clone following the README reaches an edited shot list without help | [easy] | todo |
+| T14 | README with install, quick start, screenshots of the editor, a demo GIF; contribution notes | `README.md`, `CONTRIBUTING.md`, `docs/images/editor.png`, `docs/images/demo.gif` | A fresh clone following the README reaches an edited shot list without help | [easy] | done |
 | T15 | Final review: code, security of the local server, of launching the game and of running FFmpeg with user paths; then publish to GitHub | whole repo | Review notes resolved; repo public (you push it) | [hard] | todo |
+| T16 | Make `test_demo_files_are_found_as_written_or_beside_the_shot_list` (`tests/test_capture.py`) independent of the current folder: run it with `monkeypatch.chdir(tmp_path)`. It fails when `demos/match.dem` exists under the working directory | `tests/test_capture.py` | `pytest` passes from the repo root and from a folder that has a `demos/match.dem` | [easy] | todo |
 
 Notes from T3 (not tasks yet; decide if any are wanted):
 
@@ -228,6 +229,13 @@ Notes from T13 (not tasks yet; decide if any are wanted). Details in `docs/rende
 - The editor's Make video button always writes `<shot list name>.mp4` next to the shot list and replaces it; the CLI refuses to replace a file without `--force`. The page does not play or link the video; it shows the path.
 - Checked in the browser pane: the button, its hint and status box, and a real render of the 8 sample clips (done, file 1920x1080, 2686 frames). Not checked in the browser: the crossfade and labels inputs (the automation could not fill them; the same options are covered by the CLI run and by `test_server.py`). `pytest` 413 passed. One run showed a single failure of the old `test_oversized_and_malformed_bodies` (connection reset); three later full runs passed.
 - T15 review items: `render_video` runs FFmpeg with the shot list's clip paths (derived from the shot, not free text), label text goes through files, and the editor request gives only a number and a switch. A very long shot list is refused at about 30 000 characters of filter graph (measured: about 270 shots, or about 90 with labels).
+
+Notes from T14 (not tasks yet; decide if any are wanted):
+
+- T14 also created `CONTRIBUTING.md`, `docs/images/editor.png` (headless Chrome screenshot of the editor on the sample demo) and `docs/images/demo.gif` (9 s → 7 s of the sample render at 480 px, 10 fps, 3.9 MB). The GIF is cut from `output/t12/shots.mp4`, which is git-ignored, so it can be regenerated.
+- The README's clone URL is a placeholder (`<your-account>`) until T15 publishes the repo.
+- Fresh-copy check: the tracked and untracked (not ignored) files were copied into a new folder, installed into a new venv with `pip install -e ".[dev]"`, then `analyze`, `plan --preset major-replay --top 5`, `capture --dry-run` and `pytest` were run. The copy has no `demos/*.dem` except the one added by hand. This found T16.
+- Not checked: the Windows `open` default (opening a browser), `capture` for real (needs CS2), the Make-video button after the README changes.
 
 After T11 the tool is already useful without capture: you get an edited shot
 list with exact round times and players, which you can follow by hand in the
