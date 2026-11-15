@@ -43,6 +43,9 @@ from fragdirector.capture.plan import (
 from fragdirector.models import ShotList, demo_file_name
 
 
+CONSOLE_WAIT_SECONDS = 180  # how long the game gets to open its console
+
+
 def _is_network_path(text: str) -> bool:
     """True for a path on a network share (two leading slashes of either kind)."""
     return len(text) >= 2 and text[0] in "\\/" and text[1] in "\\/"
@@ -182,7 +185,15 @@ def capture_jobs(
 
     log(f"starting CS2 for {len(todo)} clip(s) (-insecure, demo playback only)")
     start_game(launch_command(steam, port, password))
-    console = Console(port, password, timeout=180)
+    try:
+        console = Console(port, password, timeout=CONSOLE_WAIT_SECONDS)
+    except GameGone:
+        raise
+    except CaptureError as error:
+        # Without a console there is no way to tell the game to quit.
+        raise CaptureError(
+            f"{error} CS2 was started and may still be running; close it yourself before trying again."
+        ) from error
     session = GameSession(console, log)
     work = Path(tempfile.mkdtemp(prefix="fragdirector_capture_"))
     try:

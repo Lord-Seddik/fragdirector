@@ -2,8 +2,19 @@
 
 import argparse
 import sys
+import unicodedata
 
 from fragdirector import __version__
+
+
+def _printable(text: object) -> str:
+    """Text from a demo or shot list, safe to print: control characters (escape
+    codes, line breaks, tabs) and format characters (right-to-left override,
+    zero-width marks) become '?', so they cannot change the terminal's display.
+    The model keeps the real text; only the printed copy is changed."""
+    return "".join(
+        "?" if unicodedata.category(ch) in ("Cc", "Cf") else ch for ch in str(text)
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -188,7 +199,7 @@ def print_kills(demo) -> None:
     for rnd in demo.rounds:
         kills = [kill for kill in demo.kills if kill.round == rnd.number]
         winner = rnd.winner or "-"
-        print(f"Round {rnd.number}  (winner {winner}, {rnd.reason or 'unknown reason'})")
+        print(_printable(f"Round {rnd.number}  (winner {winner}, {rnd.reason or 'unknown reason'})"))
         for kill in kills:
             attacker = demo.player_name(kill.attacker) if kill.attacker else "(no one)"
             line = (
@@ -202,7 +213,7 @@ def print_kills(demo) -> None:
             flags = _flags(kill)
             if flags:
                 line += f"  <{flags}>"
-            print(line)
+            print(_printable(line))
         if not kills:
             print("  (no kills)")
 
@@ -210,12 +221,13 @@ def print_kills(demo) -> None:
 def print_summary(demo) -> None:
     from fragdirector.parse import scoreboard
 
-    print(f"Map: {demo.map_name or 'unknown'}   Rounds: {len(demo.rounds)}   "
-          f"Kills: {len(demo.kills)}   Bomb events: {len(demo.bomb_events)}")
+    print(_printable(f"Map: {demo.map_name or 'unknown'}   Rounds: {len(demo.rounds)}   "
+                     f"Kills: {len(demo.kills)}   Bomb events: {len(demo.bomb_events)}"))
     print()
     print(f"{'Player':<24}{'K':>4}{'D':>4}{'A':>4}")
     for line in scoreboard(demo):
-        print(f"{demo.player_name(line.player):<24}{line.kills:>4}{line.deaths:>4}{line.assists:>4}")
+        name = _printable(demo.player_name(line.player))
+        print(f"{name:<24}{line.kills:>4}{line.deaths:>4}{line.assists:>4}")
 
 
 def print_moments(demo, weights) -> None:
@@ -234,7 +246,7 @@ def print_moments(demo, weights) -> None:
         )
         if moment.kind == "clutch":
             line += f"  {moment.details['time_left_seconds']:.0f}s left"
-        print(line)
+        print(_printable(line))
 
 
 def analyze(args: argparse.Namespace) -> int:
@@ -263,7 +275,7 @@ def _choose_moments(demo, moments, args) -> list:
         ids = [p.id for p in demo.players if p.id == args.player or p.name.casefold() == wanted]
         if not ids:
             names = ", ".join(sorted(p.name for p in demo.players))
-            raise ValueError(f"No player named '{args.player}' in this demo. Players: {names}")
+            raise ValueError(f"No player named '{_printable(args.player)}' in this demo. Players: {_printable(names)}")
         moments = [m for m in moments if m.player in ids]
     if args.round is not None:
         if demo.round_number(args.round) is None:
@@ -282,13 +294,14 @@ def print_plan(demo, result) -> None:
     shotlist = result.shotlist
     print(f"Shots: {len(shotlist)}   Length: {shotlist.duration_seconds():.1f} s")
     for number, shot in enumerate(shotlist.shots, start=1):
-        print(
+        name = _printable(demo.player_name(shot.pov_player))
+        print(_printable(
             f"  {number:>2}  {shot.start_tick:>7} - {shot.end_tick:<7}  "
-            f"{demo.player_name(shot.pov_player):<16} {shot.speed:g}x  "
+            f"{name:<16} {shot.speed:g}x  "
             f"{shot.duration_seconds(shotlist.tick_rate):5.1f} s  {shot.label}"
-        )
+        ))
     for note in result.notes:
-        print(f"Note: {note}")
+        print(f"Note: {_printable(note)}")
 
 
 def plan(args: argparse.Namespace) -> int:
@@ -305,7 +318,7 @@ def plan(args: argparse.Namespace) -> int:
         moments = _choose_moments(demo, rank_moments(detect_basic(demo), weights), args)
         result = direct(moments, demo, preset, args.budget)
     except (DemoParseError, ValueError) as error:  # preset, weights and edit errors are ValueErrors
-        print(f"fragdirector: {error}", file=sys.stderr)
+        print(f"fragdirector: {_printable(error)}", file=sys.stderr)
         return 1
 
     print(f"Preset: {preset.name}   Moments: {len(moments)}")
@@ -316,7 +329,7 @@ def plan(args: argparse.Namespace) -> int:
     if problems:
         print("fragdirector: the shot list has problems and was not written:", file=sys.stderr)
         for problem in problems:
-            print(f"  {problem}", file=sys.stderr)
+            print(f"  {_printable(problem)}", file=sys.stderr)
         return 1
     try:
         result.shotlist.save(args.out)
@@ -346,7 +359,7 @@ def open_editor(args: argparse.Namespace) -> int:
             shotlist = ShotList.load(args.shots)
             print(f"Loaded {len(shotlist)} shots from {args.shots}")
             for problem in shotlist_problems(shotlist, demo):
-                print(f"Warning: {problem}", file=sys.stderr)
+                print(f"Warning: {_printable(problem)}", file=sys.stderr)
         clips = Path(args.clips) if args.clips else Path(args.shots).parent / "clips"
         app = build_app(demo, weights, shotlist, args.shots, clips_dir=clips)
     except (DemoParseError, ValueError) as error:  # weights and shot list errors are ValueErrors
@@ -385,7 +398,7 @@ def capture(args: argparse.Namespace) -> int:
     from fragdirector.parse import DemoParseError, parse_demo
 
     def log(message: str) -> None:
-        print(f"[capture] {message}", flush=True)
+        print(f"[capture] {_printable(message)}", flush=True)
 
     shots_file = Path(args.shots)
     clips = Path(args.clips) if args.clips else shots_file.parent / "clips"
@@ -403,14 +416,14 @@ def capture(args: argparse.Namespace) -> int:
         print(f"fragdirector: {error.filename or error} does not exist.", file=sys.stderr)
         return 1
     except (CaptureError, DemoParseError, ValueError, OSError) as error:
-        print(f"fragdirector: cannot capture:\n{error}", file=sys.stderr)
+        print(f"fragdirector: cannot capture:\n{_printable(error)}", file=sys.stderr)
         return 1
 
     log(f"{len(jobs)} clip(s) for {len(only) if only else len(shotlist)} shot(s), into {clips}")
     if args.dry_run:
         for job in jobs:
             state = "exists" if job.clip.exists() and not args.force else "to capture"
-            print(f"  {job.describe()}  ->  {job.clip.name}  [{state}]  (seek {job.seek_tick})")
+            print(_printable(f"  {job.describe()}  ->  {job.clip.name}  [{state}]  (seek {job.seek_tick})"))
         return 0
     if sys.platform != "win32":
         print("fragdirector: capturing only works on Windows.", file=sys.stderr)
@@ -418,7 +431,7 @@ def capture(args: argparse.Namespace) -> int:
     try:
         results = capture_jobs(jobs, options, log=log, force=args.force, steam=args.steam, port=args.port)
     except CaptureError as error:
-        print(f"fragdirector: capture stopped: {error}", file=sys.stderr)
+        print(f"fragdirector: capture stopped: {_printable(error)}", file=sys.stderr)
         print("Clips written so far are kept; run the same command again to continue.", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
@@ -428,7 +441,7 @@ def capture(args: argparse.Namespace) -> int:
     log(f"done: {counts['captured']} captured, {counts['skipped']} already there, {counts['failed']} failed")
     for result in results:
         if result.status == "failed":
-            print(f"  failed: {result.job.describe()}: {result.message}", file=sys.stderr)
+            print(_printable(f"  failed: {result.job.describe()}: {result.message}"), file=sys.stderr)
     return 1 if counts["failed"] else 0
 
 
@@ -443,7 +456,7 @@ def render(args: argparse.Namespace) -> int:
     out = Path(args.out) if args.out else shots_file.with_suffix(".mp4")
 
     def log(message: str) -> None:
-        print(f"[render] {message}", flush=True)
+        print(f"[render] {_printable(message)}", flush=True)
 
     try:
         options = RenderOptions(crossfade_seconds=args.crossfade, labels=args.labels, crf=args.crf)
@@ -458,7 +471,7 @@ def render(args: argparse.Namespace) -> int:
         print("\nfragdirector: render interrupted; no video was written.", file=sys.stderr)
         return 130
     except (RenderError, ValueError, OSError) as error:
-        print(f"fragdirector: cannot render:\n{error}", file=sys.stderr)
+        print(f"fragdirector: cannot render:\n{_printable(error)}", file=sys.stderr)
         return 1
     if result is not None:
         print(f"Wrote {result.path} ({result.seconds:.1f} s; the shot list asks for "

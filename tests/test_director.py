@@ -584,6 +584,58 @@ def test_plan_refuses_to_write_a_shot_list_with_problems(parsed, tmp_path, capsy
     assert not out.exists()
 
 
+# -- control characters in printed text (T17) -----------------------------
+
+HOSTILE = "c1\x1b[2J\x1b]0;owned\x07\n\tx"
+HOSTILE_PRINTED = "c1?[2J?]0;owned???x"
+
+
+@pytest.fixture
+def hostile(monkeypatch):
+    """The ace again, but c1's name holds an escape sequence, a BEL, a line
+    break and a tab."""
+    demo, _ = spread_ace()
+    players = tuple(replace(p, name=HOSTILE) if p.id == "c1" else p for p in demo.players)
+    demo = replace(demo, players=players)
+    monkeypatch.setattr("fragdirector.parse.parse_demo", lambda path: demo)
+    return demo
+
+
+def test_analyze_prints_control_characters_as_question_marks(hostile, capsys):
+    assert cli.main(["analyze", "x.dem", "--dump-kills"]) == 0
+    out = capsys.readouterr().out
+    assert HOSTILE_PRINTED in out
+    assert not any(ch in out for ch in "\x1b\x07\t")
+    assert hostile.player_name("c1") == HOSTILE  # the model keeps the real name
+
+
+def test_plan_prints_control_characters_as_question_marks(hostile, tmp_path, capsys):
+    out_file = tmp_path / "shots.json"
+    assert cli.main(["plan", "x.dem", "--top", "1", "--out", str(out_file)]) == 0
+    out = capsys.readouterr().out
+    assert HOSTILE_PRINTED in out
+    assert not any(ch in out for ch in "\x1b\x07\t")
+    assert ShotList.load(out_file).shots[0].label.startswith(HOSTILE)  # the file keeps the real label
+
+
+# -- format characters in printed text (T19) -----------------------------
+
+FORMAT_NAME = "c1‮yek​"  # right-to-left override and zero-width space (category Cf)
+FORMAT_PRINTED = "c1?yek?"
+
+
+def test_analyze_prints_format_characters_as_question_marks(monkeypatch, capsys):
+    demo, _ = spread_ace()
+    players = tuple(replace(p, name=FORMAT_NAME) if p.id == "c1" else p for p in demo.players)
+    demo = replace(demo, players=players)
+    monkeypatch.setattr("fragdirector.parse.parse_demo", lambda path: demo)
+    assert cli.main(["analyze", "x.dem", "--dump-kills"]) == 0
+    out = capsys.readouterr().out
+    assert FORMAT_PRINTED in out
+    assert "‮" not in out and "​" not in out
+    assert demo.player_name("c1") == FORMAT_NAME  # the model keeps the real name
+
+
 # -- a real demo ---------------------------------------------------------
 
 SAMPLE_DEMOS = sorted((Path(__file__).resolve().parent.parent / "demos").glob("*.dem"))

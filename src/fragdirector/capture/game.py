@@ -365,14 +365,28 @@ class Tools:
 class Recorder:
     """FFmpeg capturing the CS2 window; frame times are wall clock minus ``base``."""
 
-    def __init__(self, tools: Tools, raw_path: Path, fps: int) -> None:
+    def __init__(self, tools: Tools, raw_path: Path, fps: int, error_path: Path | None = None) -> None:
         self.base = int(time.time())
         self.frames = 0
+        # FFmpeg's error output goes to a file, not a pipe nobody reads while it
+        # records: a flood of errors would fill the pipe and stall FFmpeg.
+        self.error_path = error_path or raw_path.with_name(raw_path.name + ".log")
         command = record_command(tools.ffmpeg, raw_path, fps, self.base, tools.encoder)
-        self.proc = subprocess.Popen(
-            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
+        with open(self.error_path, "wb") as error_file:
+            self.proc = subprocess.Popen(
+                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=error_file
+            )
         threading.Thread(target=self._read_progress, daemon=True).start()
+
+    def error_text(self, limit: int = 600) -> str:
+        """The end of what FFmpeg printed to its error output."""
+        try:
+            with open(self.error_path, "rb") as error_file:
+                error_file.seek(0, 2)
+                error_file.seek(max(0, error_file.tell() - limit))
+                return error_file.read().decode("utf-8", "replace")
+        except OSError:
+            return ""
 
     def _read_progress(self) -> None:
         for raw in self.proc.stdout:
@@ -387,8 +401,7 @@ class Recorder:
         deadline = time.time() + timeout
         while self.frames < 15:
             if self.proc.poll() is not None:
-                error = self.proc.stderr.read().decode("utf-8", "replace")[-600:]
-                raise CaptureError("FFmpeg window capture stopped: " + error)
+                raise CaptureError("FFmpeg window capture stopped: " + self.error_text())
             if time.time() > deadline:
                 raise CaptureError("FFmpeg window capture produced no frames (is the game window minimised?)")
             time.sleep(0.05)

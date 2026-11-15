@@ -1,14 +1,18 @@
 """Tests for capture: jobs, clip names, console and FFmpeg commands, timing,
 and the game session driven by a scripted fake console. No game needed."""
 
+import io
 import re
+import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from conftest import DEMO_PATH, P1, P2, P3, P4, build_demo
 from fragdirector.capture import CaptureError, CaptureOptions, clip_name, clip_path, demo_files, plan_jobs
+from fragdirector.capture import game, run
 from fragdirector.capture.game import GameGone, GameSession
 from fragdirector.capture.plan import (
     MIN_LEAD_TICKS,
@@ -444,12 +448,20 @@ def test_a_closed_console_stops_everything():
 
 
 def test_demo_files_are_found_as_written_or_beside_the_shot_list(tmp_path, monkeypatch):
+    # Run from tmp_path so the result does not depend on the folder pytest was started in.
+    monkeypatch.chdir(tmp_path)
     (tmp_path / "demos").mkdir()
     (tmp_path / "demos" / "match.dem").write_bytes(b"")
     shots_file = tmp_path / "shots.json"
     shotlist = shots(shot())
     found = demo_files(shotlist, shots_file)
-    assert found == {"match.dem": tmp_path / "demos" / "match.dem"}
+    # "demos/match.dem" is found as written, so the path is relative to tmp_path.
+    assert found["match.dem"].resolve() == (tmp_path / "demos" / "match.dem").resolve()
+    # From another folder the written path is not there, so the file beside the shot list is used.
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    assert demo_files(shotlist, shots_file) == {"match.dem": tmp_path / "demos" / "match.dem"}
+    monkeypatch.chdir(tmp_path)
 
     other = tmp_path / "copy" / "match.dem"
     other.parent.mkdir()
@@ -533,3 +545,68 @@ def test_cli_capture_rejects_bad_shot_numbers(tmp_path, capsys, only):
 def test_cli_capture_reports_a_missing_shot_list(tmp_path, capsys):
     assert main(["capture", str(tmp_path / "none.json")]) == 1
     assert "does not exist" in capsys.readouterr().err
+
+
+# -- the recorder and the game start -------------------------------------------
+
+
+class FakeProc:
+    """Stands in for the FFmpeg process: reports 20 frames, or has already exited."""
+
+    def __init__(self, exit_code=None):
+        self.stdin = io.BytesIO()
+        # a process that already exited never got to report frames
+        self.stdout = io.BytesIO(b"" if exit_code else b"frame=20\nprogress=continue\n")
+        self.exit_code = exit_code
+
+    def poll(self):
+        return self.exit_code
+
+    def wait(self, timeout=None):
+        return self.exit_code or 0
+
+    def kill(self):
+        pass
+
+
+def fake_tools():
+    return SimpleNamespace(ffmpeg="ffmpeg", encoder=["-c:v", "libx264"])
+
+
+def test_recorder_sends_ffmpeg_errors_to_a_file_not_a_pipe(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_popen(command, **kwargs):
+        seen.update(kwargs)
+        kwargs["stderr"].write(b"x" * 100_000 + b"the last error")  # more than a pipe holds
+        return FakeProc(exit_code=1)
+
+    monkeypatch.setattr(game.subprocess, "Popen", fake_popen)
+    recorder = game.Recorder(fake_tools(), tmp_path / "raw.mkv", 60)
+    assert seen["stderr"] not in (subprocess.PIPE, subprocess.STDOUT)  # a file, not a pipe
+    assert recorder.error_text().endswith("the last error")
+    assert len(recorder.error_text()) <= 600
+    with pytest.raises(CaptureError, match="the last error"):
+        recorder.wait_until_recording(timeout=1)
+
+
+def test_recorder_error_text_is_empty_when_there_is_no_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(game.subprocess, "Popen", lambda command, **kwargs: FakeProc())
+    recorder = game.Recorder(fake_tools(), tmp_path / "raw.mkv", 60)
+    recorder.error_path.unlink()
+    assert recorder.error_text() == ""
+
+
+def test_a_console_that_never_opens_says_the_game_is_still_running(tmp_path, monkeypatch):
+    def never_opens(port, password, timeout):
+        raise CaptureError(f"The CS2 console did not open on port {port}: refused")
+
+    monkeypatch.setattr(run, "Tools", lambda: object())
+    monkeypatch.setattr(run, "find_steam", lambda: "steam.exe")
+    monkeypatch.setattr(run, "cs2_running", lambda: False)
+    monkeypatch.setattr(run, "check_port_free", lambda port: None)
+    monkeypatch.setattr(run, "start_game", lambda command: None)
+    monkeypatch.setattr(run, "Console", never_opens)
+    job = SimpleNamespace(clip=tmp_path / "clip.mp4")
+    with pytest.raises(CaptureError, match=r"did not open on port 4000.*may still be running.*close it yourself"):
+        run.capture_jobs([job], log=lambda text: None, port=4000)
